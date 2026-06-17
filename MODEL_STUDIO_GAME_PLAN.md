@@ -1,10 +1,10 @@
 # Model Studio — Game Plan (Lean / deterministic)
 
-**Show your garments on a simple mannequin with pixel-exact prints, export product images + basic video, and push them to Shopify — zero per-product cost, no AI.**
+**Show your garments on a simple mannequin with pixel-exact prints and export product images + basic video — zero per-product cost, no AI.**
 
 Date: 2026-06-15 · Status: scope locked · Type: greenfield (new project)
 
-**Mental model:** your own Printful/Printify-style mockup generator, built in. Blank apparel plates + your exact print warped onto the print regions + recolor + background/lighting overlays → export → Shopify.
+**Mental model:** your own Printful/Printify-style mockup generator, built in. Blank apparel plates + your exact print warped onto the print regions + recolor + background/lighting overlays → export.
 
 ---
 
@@ -54,8 +54,7 @@ Recommendation: start with a bought tee + hoodie pack to ship, add a one-time gr
 - Views: front, back, side — one plate per view.
 - Backgrounds: transparent PNG, white/dark/studio colors, editorial/concrete/luxury backdrops (image layers), custom uploaded background.
 - Lighting: preset overlays/LUTs (soft studio, dramatic, high-contrast, ecommerce, cinematic) — compositing, not physical simulation.
-- Exports: front/back/side images, transparent PNG, product-listing set, Shopify-ready set, basic rotating/zoom video (ffmpeg pan/crossfade across plates), vertical 9:16 crop for TikTok/Reels.
-- Shopify: attach exported assets to the draft product via Admin API.
+- Exports: front/back/side images, transparent PNG, product-listing set, basic rotating/zoom video (ffmpeg pan/crossfade across plates), vertical 9:16 crop for TikTok/Reels.
 
 **Cut → optional future add-ons (off by default):**
 
@@ -67,7 +66,7 @@ Recommendation: start with a bought tee + hoodie pack to ship, add a one-time gr
 
 ## 5. Stack (lean)
 
-Next.js (App Router, TS) + Tailwind + shadcn/ui · Canvas/WebGL compositing (PixiJS or plain canvas) · ffmpeg worker for video/crops · Postgres free tier (Supabase/Neon) · Cloudflare R2 storage (zero egress) · Shopify Admin GraphQL API.
+Next.js (App Router, TS) + Tailwind + shadcn/ui · Canvas/WebGL compositing (PixiJS or plain canvas) · ffmpeg worker for video/crops · Postgres free tier (Supabase/Neon) · Cloudflare R2 storage (zero egress).
 
 No React Three Fiber, no GPU, no AI keys, no per-call providers, and the job queue is optional (compositing is instant and local; only video assembly needs a short-lived worker).
 
@@ -76,13 +75,13 @@ No React Three Fiber, no GPU, no AI keys, no per-call providers, and the job que
 - **GarmentDesign** — `type`, `baseColor`, `fitStyle`, and `prints[]`: `{ placement: front|back|leftSleeve|rightSleeve|legL|legR, assetUrl, x, y, scale, rotation }`. The locked-art record.
 - **MannequinPlate** — `{ garmentType, view: front|back|side, fitStyle, baseImageUrl, recolorMask, regions[]: { placement, warpMesh, displacementMap, shadowMap } }`. The reusable base.
 - **Scene** — `{ productId, plateSet, background, lighting, view }`. The reproducible recipe.
-- **ExportAsset** — `{ url, format, dimensions, channel: shopify|tiktok|reels, shopifyMediaId }`.
+- **ExportAsset** — `{ url, format, dimensions, channel: store|tiktok|reels }`.
 
 (No RenderJob/provider/AI-QA entities — nothing to bill or verify.)
 
-## 7. Export & Shopify
+## 7. Export
 
-Images: front/back/side, transparent PNG, and a product-listing set at Shopify sizes (1:1 ~2048px hero + variants) with alt text and clean filenames. Video: ffmpeg pan/zoom/crossfade across the plates → short rotating/product clip and a 9:16 vertical crop — all $0. Handoff: staged upload → `productCreateMedia` attaches assets to the **draft** product; store `shopifyMediaId` to avoid dupes. Closes your flow: create product → Open in Model Studio → pick mannequin/background/lighting/view → preview → export → attach to Shopify.
+Images: front/back/side, transparent PNG, and a product-listing set (1:1 ~2048px hero + variants) with alt text and clean filenames. Video: ffmpeg pan/zoom/crossfade across the plates → short rotating/product clip and a 9:16 vertical crop — all $0. Closes your flow: create product → Open in Model Studio → pick mannequin/background/lighting/view → preview → export.
 
 ## 8. Studio tab UX
 
@@ -92,8 +91,8 @@ Entry: "Open in Model Studio" on each product. Center: live composite preview + 
 
 | Phase | Ships | Effort* |
 |---|---|---|
-| **0** | Scaffold, data model, product import, asset storage (R2), Shopify app connect | ~1 wk |
-| **1** | Composite engine + tee plates (front/back) + recolor + transparent PNG + Shopify push | 1–2 wks |
+| **0** | Scaffold, data model, product import, asset storage (R2) | ~1 wk |
+| **1** | Composite engine + tee plates (front/back) + recolor + transparent PNG | 1–2 wks |
 | **2** | All garment types + sleeve/leg prints + backgrounds + lighting overlays + product-listing set | ~2 wks |
 | **3** | Side/extra views + basic rotating/zoom + 9:16 video via ffmpeg | ~1 wk |
 | **Future** | (optional) simple 3D mannequin for free 360; AI add-on for photoreal humans | — |
@@ -113,7 +112,7 @@ One-time: blank-plate pack (a few dollars) or a one-time gray-mannequin render +
 | Pose selector | Partial — limited to plates you make (no walking/seated unless shot) |
 | Model rotation, 360 | Partial — front/back/side plates; true free-spin = optional 3D later |
 | Backgrounds (7) + custom upload · Lighting (5) | In — compositing layers/LUTs |
-| Export: F/B/side, transparent PNG, listing set, Shopify set | In |
+| Export: F/B/side, transparent PNG, listing set | In |
 | Export: short/rotating/vertical video | In — ffmpeg across plates |
 | Export: true 360 spin | Optional later (needs more plates or simple 3D) |
 | Model library (mannequin, cropped/product-only, faceless) | In |
@@ -124,7 +123,7 @@ One-time: blank-plate pack (a few dollars) or a one-time gray-mannequin render +
 
 - **Plate coverage** — every view/fit/garment needs a plate; mitigate by starting with tee+hoodie front/back and expanding. *The main ongoing work.*
 - **Fold realism** — flat composites can look pasted; mitigate with good displacement + shadow maps baked into each plate.
-- **Shopify media constraints** — validate dimensions/format/count before push.
+- **Export constraints** — validate dimensions/format/count before writing assets.
 
 ## 13. Next steps (week 1)
 
@@ -132,7 +131,6 @@ One-time: blank-plate pack (a few dollars) or a one-time gray-mannequin render +
 2. Implement `GarmentDesign` + `MannequinPlate` models and a product picker with "Open in Model Studio."
 3. Get one blank tee plate (front + back) with a defined chest/back print region.
 4. Build the warp-composite + recolor for that region and render a transparent PNG.
-5. Wire the Shopify "attach to draft" call.
 
 That thin slice proves the whole loop. Everything after is more plates and more export formats.
 

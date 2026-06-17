@@ -1,0 +1,16 @@
+# Netlify build config. The official Next.js runtime is auto-installed by Netlify
+# and handles routing, the App Router, and API routes as serverless functions.
+[build]
+  command = "npm run build"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# Gemini (AI mode) reads GEMINI_API_KEY from the environment. Set it in the Netlify
+# UI under Site settings → Environment variables — never commit the key.
+# Free background-removal mode runs entirely in the visitor's browser, so it needs
+# no server config and no credits.
+
+# AI mode runs Gemini inside a Background Function (netlify/functions/enhance-background.ts)
+# so it isn't bound by the ~10s synchronous function timeout. Background functions and
+# Netlify Blobs are auto-detected from netlify/functions — no extra config needed.

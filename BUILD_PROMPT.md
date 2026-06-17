@@ -39,27 +39,23 @@ mannequin plates. Think Printful/Printify mockup generator. Build on the existin
 3. **Transparent PNG export** end to end (canvas → download).
 
 4. **Server export** (`src/app/api/export/route.ts`) with `@napi-rs/canvas` so exports don't
-   depend on the browser. Generate the **Shopify product-listing set** (1:1 2048 hero +
+   depend on the browser. Generate the **product-listing set** (1:1 2048 hero +
    variants) with alt text and clean filenames.
 
 5. **Video export** — an ffmpeg step that pans/zooms/crossfades across the available view
    plates into a short MP4 plus a 9:16 vertical crop for TikTok/Reels.
 
-6. **Shopify attach** (`src/lib/shopify/client.ts`) — `stagedUploadsCreate` → PUT bytes →
-   `productCreateMedia` against the DRAFT product; persist returned media IDs onto the assets.
-
-7. **Persistence** — replace mock data with Postgres + Prisma for `GarmentDesign`,
+6. **Persistence** — replace mock data with Postgres + Prisma for `GarmentDesign`,
    `MannequinPlate`, `Scene`, `ExportAsset`; import products from the creation workflow.
 
-8. **Control rail depth** — per-fit plates, all backgrounds and lighting presets, and
+7. **Control rail depth** — per-fit plates, all backgrounds and lighting presets, and
    Front/Back/Side as plate switches.
 
 ## Acceptance criteria
 - Changing mannequin/fit/background/lighting/view updates the preview live, with the print
   pixel-identical to the source art (no color, scale, or position drift).
-- Export produces front/back/side PNGs, a transparent PNG, a Shopify-ready set, and a short +
+- Export produces front/back/side PNGs, a transparent PNG, a product-listing set, and a short +
   9:16 video.
-- "Attach to Shopify draft" puts the assets on the draft product.
 - Grep proves it: **zero** network calls to any AI provider in the codebase.
 
 ## Pointers

@@ -1,0 +1,77 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model GarmentDesign {
+  id        String   @id
+  name      String
+  type      String
+  baseColor String
+  fitStyle  String
+  prints    Json
+  mockupUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  scenes Scene[]
+  assets ExportAsset[]
+}
+
+model MannequinPlate {
+  id             String   @id
+  garmentType    String
+  view           String
+  fitStyle       String
+  modelType      String
+  baseImageUrl   String
+  recolorMaskUrl String?
+  regions        Json
+  width          Int
+  height         Int
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([garmentType, view, fitStyle, modelType])
+}
+
+model Scene {
+  id                  String   @id @default(cuid())
+  productId           String
+  modelType           String
+  fitStyle            String
+  view                String
+  background          String
+  customBackgroundUrl String?
+  lighting            String
+  createdAt           DateTime @default(now())
+
+  product GarmentDesign @relation(fields: [productId], references: [id], onDelete: Cascade)
+  assets   ExportAsset[]
+}
+
+model ExportAsset {
+  id              String   @id @default(cuid())
+  garmentDesignId String
+  sceneId         String?
+  url             String
+  format          String
+  width           Int
+  height          Int
+  channel         String
+  filename        String?
+  altText         String?
+  view            String?
+  role            String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  product GarmentDesign @relation(fields: [garmentDesignId], references: [id], onDelete: Cascade)
+  scene   Scene?         @relation(fields: [sceneId], references: [id], onDelete: SetNull)
+
+  @@index([garmentDesignId])
+}

@@ -1,41 +1,53 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStudio } from "@/lib/store";
-import { mockProducts } from "@/lib/mock-data";
 import { findPlate } from "@/lib/composite/plates";
 import { renderScene } from "@/lib/composite/engine";
+import { designWithCustomPrint } from "@/lib/design";
+import type { GarmentDesign, MannequinPlate } from "@/lib/types";
 
-export default function StudioCanvas() {
+export default function StudioCanvas({
+  product,
+  plates,
+}: {
+  product: GarmentDesign;
+  plates: MannequinPlate[];
+}) {
   const ref = useRef<HTMLCanvasElement>(null);
   const scene = useStudio();
+  const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    const product = mockProducts.find((p) => p.id === scene.productId);
-    const plate = findPlate(product?.type ?? "tshirt", scene.view, scene.fitStyle);
+    const plate = findPlate(plates, product.type, scene.view, scene.fitStyle, scene.modelType);
     if (!product || !plate || !ref.current) return;
 
+    const design = designWithCustomPrint(product, scene.view, scene.customPrint);
     let cancelled = false;
-    renderScene(scene, product, plate)
+    setMessage(null);
+    renderScene(scene, design, plate)
       .then((res) => {
         if (cancelled || !ref.current) return;
         ref.current.width = res.canvas.width;
         ref.current.height = res.canvas.height;
         ref.current.getContext("2d")?.drawImage(res.canvas, 0, 0);
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) setMessage("Unable to render this plate.");
+      });
     return () => {
       cancelled = true;
     };
-  }, [scene]);
+  }, [scene, product, plates]);
 
   return (
-    <div className="relative flex aspect-square w-full max-w-[520px] items-center justify-center rounded-lg border border-dashed border-neutral-700 bg-neutral-950">
+    <div className="relative flex aspect-square w-full max-w-[620px] items-center justify-center overflow-hidden rounded-lg border border-neutral-800 bg-neutral-950">
       <canvas ref={ref} className="max-h-full max-w-full" />
-      <p className="pointer-events-none absolute px-6 text-center text-sm text-neutral-500">
-        Composite engine is stubbed — implement <code>renderScene()</code> and add plate
-        assets to <code>/public/plates</code> to see the mockup.
-      </p>
+      {message && (
+        <p className="pointer-events-none absolute px-6 text-center text-sm text-neutral-400">
+          {message}
+        </p>
+      )}
     </div>
   );
 }
