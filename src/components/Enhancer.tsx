@@ -35,6 +35,12 @@ const framings: { value: Framing; label: string }[] = [
 
 type Status = "queued" | "working" | "done" | "error";
 
+interface ResultFile {
+  suffix: string; // "" for the primary, "-transparent" for the cutout
+  blob: Blob;
+  url: string;
+}
+
 interface Item {
   id: string;
   order: number;
@@ -42,10 +48,11 @@ interface Item {
   file: File;
   preview: string;
   status: Status;
-  resultUrl?: string;
-  resultBlob?: Blob;
+  results?: ResultFile[];
   error?: string;
 }
+
+const baseName = (name: string) => name.replace(/\.[^.]+$/, "");
 
 function readAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -68,9 +75,9 @@ async function postJson(url: string, body: unknown) {
 }
 
 /**
- * Run the Gemini enhancement. Prefers the Netlify background function (timeout-proof,
- * up to 15 min) and polls for the result; if that endpoint isn't deployed — e.g. local
- * `next dev` returns 404 — it falls back to the synchronous /api/enhance route.
+ * Gemini enhancement. Prefers the Netlify background function (timeout-proof) and
+ * polls for the result; falls back to the synchronous /api/enhance route when that
+ * endpoint isn't deployed (e.g. local `next dev` returns 404).
  */
 async function enhanceViaGemini(imageDataUrl: string, options: unknown): Promise<string> {
   const jobId = crypto.randomUUID();
@@ -85,7 +92,6 @@ async function enhanceViaGemini(imageDataUrl: string, options: unknown): Promise
     start = null;
   }
 
-  // Not on Netlify (or function missing) → synchronous route.
   if (!start || start.status === 404) {
     const data = await postJson("/api/enhance", { imageDataUrl, options });
     if (!data.resultDataUrl) throw new Error("No image returned");
@@ -148,6 +154,7 @@ export default function Enhancer() {
   const [items, setItems] = useState<Item[]>([]);
   const [mode, setMode] = useState<Mode>("free");
   const [freeBg, setFreeBg] = useState<FreeBackground>("white");
+  const [alsoTransparent, setAlsoTransparent] = useState(false);
   const [background, setBackground] = useState<BackgroundStyle>("studioWhite");
   const [framing, setFraming] = useState<Framing>("keep");
   const [notes, setNotes] = useState("");
@@ -175,7 +182,7 @@ export default function Enhancer() {
   function clearAll() {
     items.forEach((it) => {
       URL.revokeObjectURL(it.preview);
-      if (it.resultUrl) URL.revokeObjectURL(it.resultUrl);
+      it.results?.forEach((r) => URL.revokeObjectURL(r.url));
     });
     setItems([]);
   }
@@ -191,19 +198,21 @@ export default function Enhancer() {
 
     await runPool(pending, concurrency, async (it) => {
       try {
-        let blob: Blob;
+        const results: ResultFile[] = [];
         if (mode === "free") {
           const cutout = await removeBackgroundLocal(it.file);
-          blob = await compositeOnBackground(cutout, freeBg);
+          const primary = await compositeOnBackground(cutout, freeBg);
+          results.push({ suffix: freeBg === "transparent" ? "-transparent" : "", blob: primary, url: URL.createObjectURL(primary) });
+          if (alsoTransparent && freeBg !== "transparent") {
+            const transparent = await compositeOnBackground(cutout, "transparent");
+            results.push({ suffix: "-transparent", blob: transparent, url: URL.createObjectURL(transparent) });
+          }
         } else {
-          const resultDataUrl = await enhanceViaGemini(await readAsDataUrl(it.file), {
-            background,
-            framing,
-            notes,
-          });
-          blob = await (await fetch(resultDataUrl)).blob();
+          const resultDataUrl = await enhanceViaGemini(await readAsDataUrl(it.file), { background, framing, notes });
+          const blob = await (await fetch(resultDataUrl)).blob();
+          results.push({ suffix: "", blob, url: URL.createObjectURL(blob) });
         }
-        patch(it.id, { status: "done", resultBlob: blob, resultUrl: URL.createObjectURL(blob) });
+        patch(it.id, { status: "done", results });
       } catch (err) {
         patch(it.id, { status: "error", error: err instanceof Error ? err.message : "Failed" });
       }
@@ -213,14 +222,15 @@ export default function Enhancer() {
   }
 
   async function downloadAll() {
-    const finished = items.filter((it) => it.status === "done" && it.resultBlob);
-    if (!finished.length) return;
+    const files: { name: string; blob: Blob }[] = [];
+    for (const it of items) {
+      if (it.status !== "done" || !it.results) continue;
+      const base = `${String(it.order).padStart(3, "0")}-${baseName(it.name)}`;
+      for (const r of it.results) files.push({ name: `${base}${r.suffix || "-mockup"}.png`, blob: r.blob });
+    }
+    if (!files.length) return;
     setZipping(true);
     try {
-      const files = finished.map((it) => ({
-        name: `${String(it.order).padStart(3, "0")}-${it.name.replace(/\.[^.]+$/, "")}-mockup.png`,
-        blob: it.resultBlob!,
-      }));
       downloadBlob(await zipImages(files), "mockups.zip");
     } finally {
       setZipping(false);
@@ -230,6 +240,7 @@ export default function Enhancer() {
   const done = items.filter((it) => it.status === "done").length;
   const failed = items.filter((it) => it.status === "error").length;
   const pending = items.filter((it) => it.status === "queued" || it.status === "error").length;
+  const fileCount = items.reduce((n, it) => n + (it.status === "done" ? it.results?.length ?? 0 : 0), 0);
   const runCount = pending || items.length;
   const estCost = (runCount * COST_PER_IMAGE).toFixed(2);
 
@@ -277,10 +288,23 @@ export default function Enhancer() {
       {/* Controls */}
       <div className="space-y-4 rounded-lg border border-neutral-800 p-4">
         {mode === "free" ? (
-          <div className="space-y-2">
-            <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Background</div>
-            <Choice options={freeBackgrounds} value={freeBg} onChange={setFreeBg} />
-          </div>
+          <>
+            <div className="space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Background</div>
+              <Choice options={freeBackgrounds} value={freeBg} onChange={setFreeBg} />
+            </div>
+            {freeBg !== "transparent" && (
+              <label className="flex items-center gap-2 text-sm text-neutral-300">
+                <input
+                  type="checkbox"
+                  checked={alsoTransparent}
+                  onChange={(e) => setAlsoTransparent(e.currentTarget.checked)}
+                  className="h-4 w-4 accent-white"
+                />
+                Also export a transparent PNG of each
+              </label>
+            )}
+          </>
         ) : (
           <>
             <div className="space-y-2">
@@ -318,14 +342,14 @@ export default function Enhancer() {
                 ? `Remove ${runCount} background${runCount === 1 ? "" : "s"} · free`
                 : `AI enhance ${runCount} · ≈ $${estCost}`}
           </button>
-          {done > 0 && (
+          {fileCount > 0 && (
             <button
               type="button"
               onClick={downloadAll}
               disabled={zipping || running}
               className="rounded border border-neutral-600 px-3 py-2 text-sm font-medium text-neutral-100 hover:border-neutral-400 disabled:opacity-40"
             >
-              {zipping ? "Zipping…" : `Download all (${done}) as ZIP`}
+              {zipping ? "Zipping…" : `Download all (${fileCount}) as ZIP`}
             </button>
           )}
           {items.length > 0 && (
@@ -355,14 +379,13 @@ export default function Enhancer() {
       {items.length > 0 && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
           {items.map((it) => {
-            const badge = statusBadge[it.status];
-            const showResult = it.status === "done" && it.resultUrl;
+            const primary = it.status === "done" ? it.results?.[0] : undefined;
             return (
               <div key={it.id} className="overflow-hidden rounded-lg border border-neutral-800 bg-neutral-950">
                 <div
                   className="relative flex aspect-square items-center justify-center bg-neutral-900"
                   style={
-                    showResult
+                    primary
                       ? {
                           backgroundImage:
                             "linear-gradient(45deg,#2a2a2a 25%,transparent 25%),linear-gradient(-45deg,#2a2a2a 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#2a2a2a 75%),linear-gradient(-45deg,transparent 75%,#2a2a2a 75%)",
@@ -374,31 +397,36 @@ export default function Enhancer() {
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
-                    src={showResult ? it.resultUrl : it.preview}
+                    src={primary ? primary.url : it.preview}
                     alt={it.name}
                     className={clsx("h-full w-full object-contain", it.status === "working" && "opacity-40")}
                   />
                   <span
                     className={clsx(
                       "absolute left-1.5 top-1.5 rounded px-1.5 py-0.5 text-[10px] font-medium",
-                      badge.className,
+                      statusBadge[it.status].className,
                     )}
                   >
-                    {badge.label}
+                    {statusBadge[it.status].label}
                   </span>
                 </div>
                 <div className="flex items-center justify-between gap-2 px-2 py-1.5">
                   <span className="truncate text-[11px] text-neutral-400" title={it.error ?? it.name}>
                     {it.status === "error" ? it.error : it.name}
                   </span>
-                  {showResult && (
-                    <a
-                      href={it.resultUrl}
-                      download={`${it.name.replace(/\.[^.]+$/, "")}-mockup.png`}
-                      className="shrink-0 text-[11px] text-neutral-300 underline-offset-2 hover:underline"
-                    >
-                      Save
-                    </a>
+                  {primary && (
+                    <span className="flex shrink-0 gap-2">
+                      {it.results!.map((r) => (
+                        <a
+                          key={r.suffix}
+                          href={r.url}
+                          download={`${baseName(it.name)}${r.suffix || "-mockup"}.png`}
+                          className="text-[11px] text-neutral-300 underline-offset-2 hover:underline"
+                        >
+                          {r.suffix === "-transparent" ? "Transparent" : "Save"}
+                        </a>
+                      ))}
+                    </span>
                   )}
                 </div>
               </div>

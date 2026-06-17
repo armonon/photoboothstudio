@@ -1,5 +1,3 @@
 /** @type {import('next').NextConfig} */
-const nextConfig = {
-  serverExternalPackages: ["@napi-rs/canvas"],
-};
+const nextConfig = {};
 export default nextConfig;
