@@ -63,27 +63,16 @@ function readAsDataUrl(file: File): Promise<string> {
   });
 }
 
-async function postJson(url: string, body: unknown) {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? "Request failed");
-  return data as { resultDataUrl?: string };
-}
+// AI enhance runs through the Netlify background function (timeout-proof). FN_BASE is
+// empty on the hosted web app (same origin) and an absolute URL in the bundled desktop
+// app, which has no local server. Offline, these calls simply fail with a clear message.
+const FN_BASE = process.env.NEXT_PUBLIC_FN_BASE ?? "";
 
-/**
- * Gemini enhancement. Prefers the Netlify background function (timeout-proof) and
- * polls for the result; falls back to the synchronous /api/enhance route when that
- * endpoint isn't deployed (e.g. local `next dev` returns 404).
- */
 async function enhanceViaGemini(imageDataUrl: string, options: unknown): Promise<string> {
   const jobId = crypto.randomUUID();
   let start: Response | null = null;
   try {
-    start = await fetch("/.netlify/functions/enhance-background", {
+    start = await fetch(`${FN_BASE}/.netlify/functions/enhance-background`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ jobId, imageDataUrl, options }),
@@ -92,19 +81,14 @@ async function enhanceViaGemini(imageDataUrl: string, options: unknown): Promise
     start = null;
   }
 
-  if (!start || start.status === 404) {
-    const data = await postJson("/api/enhance", { imageDataUrl, options });
-    if (!data.resultDataUrl) throw new Error("No image returned");
-    return data.resultDataUrl;
-  }
-  if (start.status !== 202 && !start.ok) {
-    throw new Error(`Could not start enhancement (${start.status}).`);
+  if (!start || (start.status !== 202 && !start.ok)) {
+    throw new Error("AI enhance needs an internet connection.");
   }
 
   const deadline = Date.now() + 5 * 60 * 1000;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 2500));
-    const res = await fetch(`/.netlify/functions/enhance-status?jobId=${encodeURIComponent(jobId)}`);
+    const res = await fetch(`${FN_BASE}/.netlify/functions/enhance-status?jobId=${encodeURIComponent(jobId)}`);
     if (!res.ok) continue;
     const data = await res.json();
     if (data.status === "done" && data.resultDataUrl) return data.resultDataUrl;

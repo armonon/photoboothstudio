@@ -1,5 +1,7 @@
 import type { MetadataRoute } from "next";
 
+export const dynamic = "force-static"; // required for `output: export` (desktop build)
+
 export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "Model Studio",

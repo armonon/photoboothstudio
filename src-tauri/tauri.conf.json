@@ -1,11 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Model Studio",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.armonon.modelstudio",
   "build": {
-    "frontendDist": "https://photoboothstudio-b6ac09.netlify.app",
-    "devUrl": "https://photoboothstudio-b6ac09.netlify.app"
+    "beforeBuildCommand": "npm run build:desktop",
+    "frontendDist": "../out",
+    "devUrl": "http://localhost:3000"
   },
   "app": {
     "windows": [
