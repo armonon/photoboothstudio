@@ -1,6 +1,7 @@
 import "./globals.css";
 import type { Metadata, Viewport } from "next";
 import RegisterSW from "@/components/RegisterSW";
+import Nav from "@/components/Nav";
 
 export const metadata: Metadata = {
   title: "Model Studio",
@@ -21,6 +22,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className="bg-neutral-950 text-neutral-100 antialiased">
+        <Nav />
         {children}
         <RegisterSW />
       </body>
