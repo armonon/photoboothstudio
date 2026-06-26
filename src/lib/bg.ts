@@ -1,4 +1,4 @@
-import type { ImageSource } from "@imgly/background-removal";
+import { removeBackgroundOnnx } from "@/lib/segmenter";
 
 export type FreeBackground = "transparent" | "white" | "softGrey";
 
@@ -12,9 +12,8 @@ const BG_FILL: Record<Exclude<FreeBackground, "transparent">, string> = {
  * The model assets download once on first call and are cached after. Returns a
  * transparent PNG blob.
  */
-export async function removeBackgroundLocal(input: ImageSource): Promise<Blob> {
-  const { removeBackground } = await import("@imgly/background-removal");
-  return removeBackground(input);
+export async function removeBackgroundLocal(input: Blob): Promise<Blob> {
+  return removeBackgroundOnnx(input);
 }
 
 /** Flatten a transparent cutout onto a solid color (or keep it transparent). */
