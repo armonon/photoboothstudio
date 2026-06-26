@@ -5,9 +5,9 @@
 // onnxruntime-web doesn't bundle cleanly under webpack/Next, so we load its ESM build
 // directly from the local /ort path with a runtime dynamic import that webpack can't see.
 
-const SIZE = 1024; // ISNet input resolution — high-res for crisp edges
-const MEAN = [0.5, 0.5, 0.5];
-const STD = [1, 1, 1];
+const SIZE = 1024; // BiRefNet input resolution
+const MEAN = [0.485, 0.456, 0.406]; // ImageNet normalization
+const STD = [0.229, 0.224, 0.225];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Ort = any;
@@ -35,7 +35,7 @@ async function getOrt(): Promise<Ort> {
 async function getSession(): Promise<Ort> {
   if (!sessionPromise) {
     sessionPromise = getOrt().then((ort) =>
-      ort.InferenceSession.create("/models/isnet-general-use.onnx", { executionProviders: ["wasm"] }),
+      ort.InferenceSession.create("/models/birefnet-lite.onnx", { executionProviders: ["wasm"] }),
     );
   }
   return sessionPromise;
@@ -67,13 +67,11 @@ export async function removeBackgroundOnnx(input: Blob): Promise<Blob> {
 
   // Preprocess → CHW float tensor, normalized like rembg (divide by max, then mean/std).
   const plane = SIZE * SIZE;
-  let max = 1;
-  for (let i = 0; i < data.length; i += 4) max = Math.max(max, data[i], data[i + 1], data[i + 2]);
   const chw = new Float32Array(3 * plane);
   for (let p = 0; p < plane; p++) {
-    chw[p] = (data[p * 4] / max - MEAN[0]) / STD[0];
-    chw[plane + p] = (data[p * 4 + 1] / max - MEAN[1]) / STD[1];
-    chw[2 * plane + p] = (data[p * 4 + 2] / max - MEAN[2]) / STD[2];
+    chw[p] = (data[p * 4] / 255 - MEAN[0]) / STD[0];
+    chw[plane + p] = (data[p * 4 + 1] / 255 - MEAN[1]) / STD[1];
+    chw[2 * plane + p] = (data[p * 4 + 2] / 255 - MEAN[2]) / STD[2];
   }
 
   const feeds = { [session.inputNames[0]]: new ort.Tensor("float32", chw, [1, 3, SIZE, SIZE]) };
