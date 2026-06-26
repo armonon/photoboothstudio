@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/fetch-model.mjs && next build",
     "build:desktop": "node scripts/build-desktop.mjs",
     "start": "next start",
     "lint": "next lint",

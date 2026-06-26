@@ -5,9 +5,9 @@
 // onnxruntime-web doesn't bundle cleanly under webpack/Next, so we load its ESM build
 // directly from the local /ort path with a runtime dynamic import that webpack can't see.
 
-const SIZE = 320; // U²-Net input resolution
-const MEAN = [0.485, 0.456, 0.406];
-const STD = [0.229, 0.224, 0.225];
+const SIZE = 1024; // ISNet input resolution — high-res for crisp edges
+const MEAN = [0.5, 0.5, 0.5];
+const STD = [1, 1, 1];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Ort = any;
@@ -22,8 +22,10 @@ async function getOrt(): Promise<Ort> {
   if (!ortPromise) {
     ortPromise = importLocal("/ort/ort.wasm.min.mjs").then((ort) => {
       ort.env.wasm.wasmPaths = "/ort/";
-      ort.env.wasm.numThreads = 1; // single-threaded: no SharedArrayBuffer / COOP-COEP needed
-      ort.env.wasm.proxy = false;
+      // Multi-threaded when the page is cross-origin isolated (COOP/COEP set in
+      // next.config for web and tauri.conf for desktop); falls back to 1 thread otherwise.
+      ort.env.wasm.numThreads = globalThis.crossOriginIsolated ? Math.min(navigator.hardwareConcurrency || 4, 8) : 1;
+      ort.env.wasm.proxy = true; // run inference in a worker so the UI stays responsive
       return ort;
     });
   }
@@ -33,7 +35,7 @@ async function getOrt(): Promise<Ort> {
 async function getSession(): Promise<Ort> {
   if (!sessionPromise) {
     sessionPromise = getOrt().then((ort) =>
-      ort.InferenceSession.create("/models/u2netp.onnx", { executionProviders: ["wasm"] }),
+      ort.InferenceSession.create("/models/isnet-general-use.onnx", { executionProviders: ["wasm"] }),
     );
   }
   return sessionPromise;

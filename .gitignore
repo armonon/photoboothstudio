@@ -12,3 +12,4 @@ public/exports/
 
 # Local Netlify folder
 .netlify
+public/models/
