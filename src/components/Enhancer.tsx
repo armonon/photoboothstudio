@@ -410,6 +410,22 @@ export default function Enhancer() {
                           {r.suffix === "-transparent" ? "Transparent" : "Save"}
                         </a>
                       ))}
+                      <button
+                        type="button"
+                        title="Preview on a 3D tee"
+                        onClick={async () => {
+                          const r = primary;
+                          const reader = new FileReader();
+                          reader.onload = () => {
+                            try { sessionStorage.setItem("tee-design", String(reader.result)); } catch { /* quota */ }
+                            window.open("/tee", "_blank");
+                          };
+                          reader.readAsDataURL(r.blob);
+                        }}
+                        className="text-[11px] text-neutral-500 underline-offset-2 hover:text-neutral-200 hover:underline"
+                      >
+                        3D
+                      </button>
                     </span>
                   )}
                 </div>

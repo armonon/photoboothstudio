@@ -20,7 +20,8 @@
     "next": "^15.5.19",
     "onnxruntime-web": "^1.19.2",
     "react": "19.0.0",
-    "react-dom": "19.0.0"
+    "react-dom": "19.0.0",
+    "three": "^0.165.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.5",
@@ -28,6 +29,7 @@
     "@types/node": "^22.9.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/three": "^0.185.0",
     "autoprefixer": "^10.4.20",
     "eslint": "^9.39.4",
     "eslint-config-next": "^15.5.19",
