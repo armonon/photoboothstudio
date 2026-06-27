@@ -6,7 +6,6 @@ import clsx from "clsx";
 
 const tabs = [
   { href: "/", label: "Studio" },
-  { href: "/tee", label: "3D tee" },
   { href: "/download", label: "Download app" },
 ];
 
