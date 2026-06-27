@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 
@@ -130,12 +131,12 @@ export default function TeePage() {
           </p>
 
           {/* Back to studio */}
-          <a
+          <Link
             href="/"
             className="block rounded border border-neutral-700 px-4 py-2 text-center text-sm text-neutral-300 hover:border-neutral-500 hover:text-white"
           >
             ← Back to Studio
-          </a>
+          </Link>
         </div>
       </div>
     </main>

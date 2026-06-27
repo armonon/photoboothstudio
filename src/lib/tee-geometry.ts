@@ -87,8 +87,6 @@ export function buildFrontPanelGeometry(
   const positions: number[] = [];
   const uvs: number[] = [];
   const indices: number[] = [];
-  const xHalf = panelWidth / 2;
-
   for (let iy = 0; iy <= gridSegs; iy++) {
     for (let ix = 0; ix <= gridSegs; ix++) {
       const u = ix / gridSegs;
