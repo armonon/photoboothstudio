@@ -63,7 +63,7 @@ export async function removeBackgroundOnnx(input: Blob): Promise<Blob> {
   const [full, fullCtx] = canvas(W, H);
   fullCtx.drawImage(bitmap, 0, 0, W, H);
 
-  const [small, sctx] = canvas(SIZE, SIZE);
+  const [, sctx] = canvas(SIZE, SIZE);
   sctx.drawImage(bitmap, 0, 0, SIZE, SIZE);
   bitmap.close();
   const { data } = sctx.getImageData(0, 0, SIZE, SIZE);
@@ -100,7 +100,7 @@ export async function removeBackgroundOnnx(input: Blob): Promise<Blob> {
   mctx.putImageData(maskImg, 0, 0);
 
   // Upscale the mask to the original size and use it as the alpha channel.
-  const [scaled, scctx] = canvas(W, H);
+  const [, scctx] = canvas(W, H);
   scctx.imageSmoothingEnabled = true;
   scctx.imageSmoothingQuality = "high";
   scctx.drawImage(mask, 0, 0, W, H);
