@@ -1,4 +1,4 @@
-// Salient-object background removal with onnxruntime-web + a self-hosted U²-Net model.
+// Background removal with onnxruntime-web + a self-hosted BiRefNet (lite) model.
 // Everything — runtime (/ort), wasm, and model (/models) — is served locally, so it works
 // fully offline once bundled into the desktop app. No third-party CDN, no API.
 //
@@ -6,6 +6,7 @@
 // directly from the local /ort path with a runtime dynamic import that webpack can't see.
 
 const SIZE = 1024; // BiRefNet input resolution
+const MAX_DIM = 4096; // cap the working/output resolution to bound canvas memory on big batches
 const MEAN = [0.485, 0.456, 0.406]; // ImageNet normalization
 const STD = [0.229, 0.224, 0.225];
 
@@ -54,11 +55,13 @@ export async function removeBackgroundOnnx(input: Blob): Promise<Blob> {
   const session = await getSession();
 
   const bitmap = await createImageBitmap(input);
-  const W = bitmap.width;
-  const H = bitmap.height;
+  // Downscale oversized photos so a 40-image batch can't blow up canvas memory.
+  const fit = Math.min(1, MAX_DIM / Math.max(bitmap.width, bitmap.height));
+  const W = Math.round(bitmap.width * fit);
+  const H = Math.round(bitmap.height * fit);
 
   const [full, fullCtx] = canvas(W, H);
-  fullCtx.drawImage(bitmap, 0, 0);
+  fullCtx.drawImage(bitmap, 0, 0, W, H);
 
   const [small, sctx] = canvas(SIZE, SIZE);
   sctx.drawImage(bitmap, 0, 0, SIZE, SIZE);
