@@ -4,14 +4,12 @@ import clsx from "clsx";
 import { useRef, useState } from "react";
 import { runPool } from "@/lib/pool";
 import { compositeOnBackground, removeBackgroundLocal, type FreeBackground } from "@/lib/bg";
+import { studioEnhance, type EnhanceFraming } from "@/lib/enhance";
 import { downloadBlob, zipImages } from "@/lib/zip";
-import type { BackgroundStyle, Framing } from "@/lib/ai/enhance";
 
 const FREE_CONCURRENCY = 1; // local model inference — run one at a time
-const AI_CONCURRENCY = 3; // network-bound — a few in parallel
-const COST_PER_IMAGE = 0.039; // Gemini 2.5 Flash Image, per generated image
 
-type Mode = "free" | "ai";
+type Mode = "free" | "studio";
 
 const freeBackgrounds: { value: FreeBackground; label: string }[] = [
   { value: "white", label: "White" },
@@ -19,18 +17,9 @@ const freeBackgrounds: { value: FreeBackground; label: string }[] = [
   { value: "transparent", label: "Transparent" },
 ];
 
-const aiBackgrounds: { value: BackgroundStyle; label: string }[] = [
-  { value: "studioWhite", label: "Studio white" },
-  { value: "softGrey", label: "Soft grey" },
-  { value: "editorial", label: "Editorial" },
-  { value: "lifestyle", label: "Lifestyle" },
-  { value: "keepOriginal", label: "Clean up original" },
-];
-
-const framings: { value: Framing; label: string }[] = [
+const framings: { value: EnhanceFraming; label: string }[] = [
   { value: "keep", label: "As shot" },
-  { value: "flatLay", label: "Flat lay" },
-  { value: "ghostMannequin", label: "Ghost mannequin" },
+  { value: "square", label: "Centered square" },
 ];
 
 type Status = "queued" | "working" | "done" | "error";
@@ -53,49 +42,6 @@ interface Item {
 }
 
 const baseName = (name: string) => name.replace(/\.[^.]+$/, "");
-
-function readAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error("Could not read file"));
-    reader.readAsDataURL(file);
-  });
-}
-
-// AI enhance runs through the Netlify background function (timeout-proof). FN_BASE is
-// empty on the hosted web app (same origin) and an absolute URL in the bundled desktop
-// app, which has no local server. Offline, these calls simply fail with a clear message.
-const FN_BASE = process.env.NEXT_PUBLIC_FN_BASE ?? "";
-
-async function enhanceViaGemini(imageDataUrl: string, options: unknown): Promise<string> {
-  const jobId = crypto.randomUUID();
-  let start: Response | null = null;
-  try {
-    start = await fetch(`${FN_BASE}/.netlify/functions/enhance-background`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jobId, imageDataUrl, options }),
-    });
-  } catch {
-    start = null;
-  }
-
-  if (!start || (start.status !== 202 && !start.ok)) {
-    throw new Error("AI enhance needs an internet connection.");
-  }
-
-  const deadline = Date.now() + 5 * 60 * 1000;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 2500));
-    const res = await fetch(`${FN_BASE}/.netlify/functions/enhance-status?jobId=${encodeURIComponent(jobId)}`);
-    if (!res.ok) continue;
-    const data = await res.json();
-    if (data.status === "done" && data.resultDataUrl) return data.resultDataUrl;
-    if (data.status === "error") throw new Error(data.error || "Enhancement failed");
-  }
-  throw new Error("Timed out waiting for the AI result.");
-}
 
 function Choice<T extends string>({
   options,
@@ -139,9 +85,9 @@ export default function Enhancer() {
   const [mode, setMode] = useState<Mode>("free");
   const [freeBg, setFreeBg] = useState<FreeBackground>("white");
   const [alsoTransparent, setAlsoTransparent] = useState(false);
-  const [background, setBackground] = useState<BackgroundStyle>("studioWhite");
-  const [framing, setFraming] = useState<Framing>("keep");
-  const [notes, setNotes] = useState("");
+  const [framing, setFraming] = useState<EnhanceFraming>("keep");
+  const [autoColor, setAutoColor] = useState(true);
+  const [shadow, setShadow] = useState(true);
   const [running, setRunning] = useState(false);
   const [zipping, setZipping] = useState(false);
   const orderRef = useRef(0);
@@ -178,13 +124,11 @@ export default function Enhancer() {
     setItems((prev) =>
       prev.map((it) => (pending.some((p) => p.id === it.id) ? { ...it, status: "working", error: undefined } : it)),
     );
-    const concurrency = mode === "free" ? FREE_CONCURRENCY : AI_CONCURRENCY;
-
-    await runPool(pending, concurrency, async (it) => {
+    await runPool(pending, FREE_CONCURRENCY, async (it) => {
       try {
         const results: ResultFile[] = [];
+        const cutout = await removeBackgroundLocal(it.file);
         if (mode === "free") {
-          const cutout = await removeBackgroundLocal(it.file);
           const primary = await compositeOnBackground(cutout, freeBg);
           results.push({ suffix: freeBg === "transparent" ? "-transparent" : "", blob: primary, url: URL.createObjectURL(primary) });
           if (alsoTransparent && freeBg !== "transparent") {
@@ -192,9 +136,12 @@ export default function Enhancer() {
             results.push({ suffix: "-transparent", blob: transparent, url: URL.createObjectURL(transparent) });
           }
         } else {
-          const resultDataUrl = await enhanceViaGemini(await readAsDataUrl(it.file), { background, framing, notes });
-          const blob = await (await fetch(resultDataUrl)).blob();
-          results.push({ suffix: "", blob, url: URL.createObjectURL(blob) });
+          const primary = await studioEnhance(cutout, { background: freeBg, autoColor, shadow, framing });
+          results.push({ suffix: freeBg === "transparent" ? "-transparent" : "", blob: primary, url: URL.createObjectURL(primary) });
+          if (alsoTransparent && freeBg !== "transparent") {
+            const transparent = await studioEnhance(cutout, { background: "transparent", autoColor, shadow: false, framing });
+            results.push({ suffix: "-transparent", blob: transparent, url: URL.createObjectURL(transparent) });
+          }
         }
         patch(it.id, { status: "done", results });
       } catch (err) {
@@ -226,13 +173,12 @@ export default function Enhancer() {
   const pending = items.filter((it) => it.status === "queued" || it.status === "error").length;
   const fileCount = items.reduce((n, it) => n + (it.status === "done" ? it.results?.length ?? 0 : 0), 0);
   const runCount = pending || items.length;
-  const estCost = (runCount * COST_PER_IMAGE).toFixed(2);
 
   return (
     <div className="space-y-5">
       {/* Mode */}
       <div className="inline-flex rounded-lg border border-neutral-800 p-1">
-        {(["free", "ai"] as Mode[]).map((m) => (
+        {(["free", "studio"] as Mode[]).map((m) => (
           <button
             key={m}
             type="button"
@@ -242,7 +188,7 @@ export default function Enhancer() {
               mode === m ? "bg-white text-black" : "text-neutral-400 hover:text-neutral-200",
             )}
           >
-            {m === "free" ? "Remove background · free" : "AI enhance · credits"}
+            {m === "free" ? "Remove background · free" : "Studio enhance · free"}
           </button>
         ))}
       </div>
@@ -271,44 +217,56 @@ export default function Enhancer() {
 
       {/* Controls */}
       <div className="space-y-4 rounded-lg border border-neutral-800 p-4">
-        {mode === "free" ? (
+        <div className="space-y-2">
+          <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Background</div>
+          <Choice options={freeBackgrounds} value={freeBg} onChange={setFreeBg} />
+        </div>
+
+        {mode === "studio" && (
           <>
             <div className="space-y-2">
-              <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Background</div>
-              <Choice options={freeBackgrounds} value={freeBg} onChange={setFreeBg} />
+              <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Framing</div>
+              <Choice options={framings} value={framing} onChange={setFraming} />
             </div>
-            {freeBg !== "transparent" && (
+            <div className="flex flex-wrap gap-x-6 gap-y-2">
               <label className="flex items-center gap-2 text-sm text-neutral-300">
                 <input
                   type="checkbox"
-                  checked={alsoTransparent}
-                  onChange={(e) => setAlsoTransparent(e.currentTarget.checked)}
+                  checked={autoColor}
+                  onChange={(e) => setAutoColor(e.currentTarget.checked)}
                   className="h-4 w-4 accent-white"
                 />
-                Also export a transparent PNG of each
+                Auto color &amp; lighting
               </label>
-            )}
-          </>
-        ) : (
-          <>
-            <div className="space-y-2">
-              <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Background</div>
-              <Choice options={aiBackgrounds} value={background} onChange={setBackground} />
-            </div>
-            <div className="space-y-2">
-              <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Presentation</div>
-              <Choice options={framings} value={framing} onChange={setFraming} />
-            </div>
-            <div className="space-y-2">
-              <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Notes (optional)</div>
-              <input
-                value={notes}
-                onChange={(e) => setNotes(e.currentTarget.value)}
-                placeholder="e.g. warm tones, slight top-down angle"
-                className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-neutral-200 placeholder:text-neutral-600 focus:border-neutral-500 focus:outline-none"
-              />
+              <label
+                className={clsx(
+                  "flex items-center gap-2 text-sm",
+                  freeBg === "transparent" ? "text-neutral-600" : "text-neutral-300",
+                )}
+              >
+                <input
+                  type="checkbox"
+                  checked={shadow && freeBg !== "transparent"}
+                  disabled={freeBg === "transparent"}
+                  onChange={(e) => setShadow(e.currentTarget.checked)}
+                  className="h-4 w-4 accent-white"
+                />
+                Contact shadow
+              </label>
             </div>
           </>
+        )}
+
+        {freeBg !== "transparent" && (
+          <label className="flex items-center gap-2 text-sm text-neutral-300">
+            <input
+              type="checkbox"
+              checked={alsoTransparent}
+              onChange={(e) => setAlsoTransparent(e.currentTarget.checked)}
+              className="h-4 w-4 accent-white"
+            />
+            Also export a transparent PNG of each
+          </label>
         )}
 
         <div className="flex flex-wrap items-center gap-3">
@@ -321,10 +279,10 @@ export default function Enhancer() {
             {running
               ? mode === "free"
                 ? "Removing backgrounds…"
-                : "Making them perfect…"
+                : "Building mockups…"
               : mode === "free"
                 ? `Remove ${runCount} background${runCount === 1 ? "" : "s"} · free`
-                : `AI enhance ${runCount} · ≈ $${estCost}`}
+                : `Enhance ${runCount} photo${runCount === 1 ? "" : "s"} · free`}
           </button>
           {fileCount > 0 && (
             <button
@@ -356,7 +314,7 @@ export default function Enhancer() {
         <p className="text-xs text-neutral-600">
           {mode === "free"
             ? "Runs locally in your browser — free, no credits, nothing uploaded. The first photo downloads a small one-time model."
-            : `Generated by Gemini at ~$${COST_PER_IMAGE.toFixed(3)} per photo. Processed ${AI_CONCURRENCY} at a time.`}
+            : "Removes the background, then auto-corrects color & lighting and adds a soft contact shadow — all locally, no credits, nothing uploaded."}
         </p>
       </div>
 
