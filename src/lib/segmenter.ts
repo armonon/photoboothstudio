@@ -49,6 +49,11 @@ function canvas(w: number, h: number) {
   return [c, c.getContext("2d", { willReadFrequently: true })!] as const;
 }
 
+/** Start loading the ORT runtime and model in the background (call early to reduce first-run wait). */
+export function warmupModel(): void {
+  getSession().catch(() => {/* ignore — errors surface properly on first real call */});
+}
+
 /** Remove the background locally; returns a transparent PNG cutout. */
 export async function removeBackgroundOnnx(input: Blob): Promise<Blob> {
   const ort = await getOrt();

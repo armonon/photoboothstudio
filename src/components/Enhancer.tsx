@@ -1,9 +1,10 @@
 "use client";
 
 import clsx from "clsx";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { runPool } from "@/lib/pool";
 import { compositeOnBackground, removeBackgroundLocal, type FreeBackground } from "@/lib/bg";
+import { warmupModel } from "@/lib/segmenter";
 import { studioEnhance, type EnhanceFraming } from "@/lib/enhance";
 import { downloadBlob, zipImages } from "@/lib/zip";
 
@@ -81,6 +82,8 @@ const statusBadge: Record<Status, { label: string; className: string }> = {
 };
 
 export default function Enhancer() {
+  useEffect(() => { warmupModel(); }, []);
+
   const [items, setItems] = useState<Item[]>([]);
   const [mode, setMode] = useState<Mode>("free");
   const [freeBg, setFreeBg] = useState<FreeBackground>("white");
