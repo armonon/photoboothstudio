@@ -22,7 +22,7 @@ let sessionPromise: Promise<Ort> | null = null;
 async function getOrt(): Promise<Ort> {
   if (!ortPromise) {
     ortPromise = importLocal("/ort/ort.wasm.min.mjs").then((ort) => {
-      ort.env.wasm.wasmPaths = "/ort/";
+      ort.env.wasm.wasmPaths = new URL("/ort/", location.href).href;
       // Multi-threaded when the page is cross-origin isolated (COOP/COEP set in
       // next.config for web and tauri.conf for desktop); falls back to 1 thread otherwise.
       ort.env.wasm.numThreads = globalThis.crossOriginIsolated ? Math.min(navigator.hardwareConcurrency || 4, 8) : 1;
