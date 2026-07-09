@@ -26,7 +26,9 @@ async function getOrt(): Promise<Ort> {
       // Multi-threaded when the page is cross-origin isolated (COOP/COEP set in
       // next.config for web and tauri.conf for desktop); falls back to 1 thread otherwise.
       ort.env.wasm.numThreads = globalThis.crossOriginIsolated ? Math.min(navigator.hardwareConcurrency || 4, 8) : 1;
-      ort.env.wasm.proxy = true; // run inference in a worker so the UI stays responsive
+      // Tauri's WKWebView blocks module workers (used by ORT proxy), so run on the main
+      // thread there. On the web the proxy keeps the UI responsive during inference.
+      ort.env.wasm.proxy = !("__TAURI_INTERNALS__" in globalThis);
       return ort;
     });
   }
