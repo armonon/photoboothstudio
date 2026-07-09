@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/fetch-model.mjs && next build",
+    "build": "node scripts/copy-ort.mjs && node scripts/fetch-model.mjs && next build",
     "build:desktop": "node scripts/build-desktop.mjs",
     "start": "next start",
     "lint": "eslint .",
@@ -18,7 +18,7 @@
     "clsx": "^2.1.1",
     "fflate": "^0.8.3",
     "next": "^15.5.19",
-    "onnxruntime-web": "^1.19.2",
+    "onnxruntime-web": "1.17.3",
     "react": "19.0.0",
     "react-dom": "19.0.0"
   },

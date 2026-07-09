@@ -27,8 +27,8 @@ async function getOrt(): Promise<Ort> {
       // next.config for web and tauri.conf for desktop); falls back to 1 thread otherwise.
       ort.env.wasm.numThreads = globalThis.crossOriginIsolated ? Math.min(navigator.hardwareConcurrency || 4, 8) : 1;
       // Tauri's WKWebView blocks module workers (used by ORT proxy), so run on the main
-      // thread there. On the web the proxy keeps the UI responsive during inference.
-      ort.env.wasm.proxy = !("__TAURI_INTERNALS__" in globalThis);
+      // thread there. NEXT_IS_DESKTOP is baked in at build time by next.config.mjs.
+      ort.env.wasm.proxy = process.env.NEXT_IS_DESKTOP !== "1";
       return ort;
     });
   }
