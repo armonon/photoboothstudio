@@ -1,34 +1,58 @@
-// Background removal with onnxruntime-web + a self-hosted BiRefNet (lite) model.
+// Background removal with onnxruntime-web + a self-hosted ISNet (general use) model.
 // Everything — runtime (/ort), wasm, and model (/models) — is served locally, so it works
 // fully offline once bundled into the desktop app. No third-party CDN, no API.
 //
-// onnxruntime-web doesn't bundle cleanly under webpack/Next, so we load its ESM build
-// directly from the local /ort path with a runtime dynamic import that webpack can't see.
+// Inference runs SINGLE-THREADED ON THE MAIN THREAD (numThreads:1, proxy:false), using the
+// UMD build loaded via a <script> tag. This is the one configuration that works everywhere:
+//   • No Web Workers / SharedArrayBuffer. ORT's ESM proxy + pthread workers are `type:"module"`,
+//     which the desktop app's WKWebView blocks (and which also fail to resolve the wasm URL
+//     inside the worker). The UMD build initialises wasm directly on the main thread.
+//   • numThreads:1 selects the non-threaded wasm binary (ort-wasm-simd.wasm), which uses
+//     growable memory rather than a fixed-size SharedArrayBuffer.
+// It's a few seconds per image, but it never fails — which multi-threaded/proxied wasm did.
 
-const SIZE = 1024; // BiRefNet input resolution
+const SIZE = 1024; // ISNet input resolution
 const MAX_DIM = 4096; // cap the working/output resolution to bound canvas memory on big batches
-const MEAN = [0.485, 0.456, 0.406]; // ImageNet normalization
-const STD = [0.229, 0.224, 0.225];
+const MEAN = [0.5, 0.5, 0.5]; // ISNet normalization: (x/255 - 0.5) / 1.0
+const STD = [1.0, 1.0, 1.0];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Ort = any;
-// new Function avoids webpack rewriting/bundling the import and TS resolving the URL.
-const importLocal = (url: string): Promise<Ort> =>
-  (new Function("u", "return import(u)") as (u: string) => Promise<Ort>)(url);
 
 let ortPromise: Promise<Ort> | null = null;
 let sessionPromise: Promise<Ort> | null = null;
 
+// Load the UMD build via a <script> tag so webpack never touches it and wasm is
+// initialised on the main thread (the ESM build only initialises via a module worker).
+function loadOrtScript(): Promise<Ort> {
+  const w = window as unknown as { ort?: Ort };
+  if (w.ort) return Promise.resolve(w.ort);
+  return new Promise<Ort>((resolve, reject) => {
+    const done = () => (w.ort ? resolve(w.ort) : reject(new Error("ONNX runtime failed to load")));
+    const existing = document.querySelector<HTMLScriptElement>("script[data-ort]");
+    if (existing) {
+      existing.addEventListener("load", done);
+      existing.addEventListener("error", () => reject(new Error("ONNX runtime failed to load")));
+      return;
+    }
+    const s = document.createElement("script");
+    s.src = "/ort/ort.umd.js";
+    s.async = true;
+    s.dataset.ort = "1";
+    s.onload = done;
+    s.onerror = () => reject(new Error("ONNX runtime failed to load"));
+    document.head.appendChild(s);
+  });
+}
+
 async function getOrt(): Promise<Ort> {
   if (!ortPromise) {
-    ortPromise = importLocal("/ort/ort.wasm.min.mjs").then((ort) => {
+    ortPromise = loadOrtScript().then((ort) => {
+      // Absolute URL: the wasm loader can't resolve a root-relative path in every context.
       ort.env.wasm.wasmPaths = new URL("/ort/", location.href).href;
-      // Multi-threaded when the page is cross-origin isolated (COOP/COEP set in
-      // next.config for web and tauri.conf for desktop); falls back to 1 thread otherwise.
-      ort.env.wasm.numThreads = globalThis.crossOriginIsolated ? Math.min(navigator.hardwareConcurrency || 4, 8) : 1;
-      // Tauri's WKWebView blocks module workers (used by ORT proxy), so run on the main
-      // thread there. NEXT_IS_DESKTOP is baked in at build time by next.config.mjs.
-      ort.env.wasm.proxy = process.env.NEXT_IS_DESKTOP !== "1";
+      ort.env.wasm.numThreads = 1; // main-thread, non-threaded binary (growable memory)
+      ort.env.wasm.proxy = false; // no module worker (blocked in WKWebView)
+      ort.env.wasm.simd = true;
       return ort;
     });
   }
@@ -38,7 +62,7 @@ async function getOrt(): Promise<Ort> {
 async function getSession(): Promise<Ort> {
   if (!sessionPromise) {
     sessionPromise = getOrt().then((ort) =>
-      ort.InferenceSession.create("/models/birefnet-lite.onnx", { executionProviders: ["wasm"] }),
+      ort.InferenceSession.create("/models/isnet.onnx", { executionProviders: ["wasm"] }),
     );
   }
   return sessionPromise;
@@ -75,7 +99,7 @@ export async function removeBackgroundOnnx(input: Blob): Promise<Blob> {
   bitmap.close();
   const { data } = sctx.getImageData(0, 0, SIZE, SIZE);
 
-  // Preprocess → CHW float tensor, normalized like rembg (divide by max, then mean/std).
+  // Preprocess → CHW float tensor: x/255, then (x - mean) / std (ISNet: mean 0.5, std 1).
   const plane = SIZE * SIZE;
   const chw = new Float32Array(3 * plane);
   for (let p = 0; p < plane; p++) {
