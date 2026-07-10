@@ -7,6 +7,7 @@ import { compositeOnBackground, removeBackgroundLocal, type FreeBackground } fro
 import { warmupModel } from "@/lib/segmenter";
 import { studioEnhance, type EnhanceFraming } from "@/lib/enhance";
 import { downloadBlob, zipImages } from "@/lib/zip";
+import MaskEditor from "@/components/MaskEditor";
 
 const FREE_CONCURRENCY = 1; // local model inference — run one at a time
 
@@ -40,6 +41,8 @@ interface Item {
   status: Status;
   results?: ResultFile[];
   error?: string;
+  cutout?: Blob; // transparent cutout kept for the Pro editor
+  recompose?: (cutout: Blob) => Promise<ResultFile[]>; // rebuild outputs from an edited cutout
 }
 
 const baseName = (name: string) => name.replace(/\.[^.]+$/, "");
@@ -93,7 +96,21 @@ export default function Enhancer() {
   const [shadow, setShadow] = useState(true);
   const [running, setRunning] = useState(false);
   const [zipping, setZipping] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const orderRef = useRef(0);
+
+  async function saveEdit(item: Item, newCutout: Blob) {
+    if (!item.recompose) return;
+    const results = await item.recompose(newCutout);
+    setItems((prev) =>
+      prev.map((it) => {
+        if (it.id !== item.id) return it;
+        it.results?.forEach((r) => URL.revokeObjectURL(r.url));
+        return { ...it, results, cutout: newCutout };
+      }),
+    );
+    setEditingId(null);
+  }
 
   function addFiles(files: FileList | null) {
     if (!files?.length) return;
@@ -127,26 +144,27 @@ export default function Enhancer() {
     setItems((prev) =>
       prev.map((it) => (pending.some((p) => p.id === it.id) ? { ...it, status: "working", error: undefined } : it)),
     );
+    // Capture the current settings so the Pro editor can rebuild outputs from an edited cutout.
+    const recompose = async (cutout: Blob): Promise<ResultFile[]> => {
+      const out: ResultFile[] = [];
+      const make = (cut: Blob, bg: FreeBackground) =>
+        mode === "free"
+          ? compositeOnBackground(cut, bg)
+          : studioEnhance(cut, { background: bg, autoColor, shadow: bg === "transparent" ? false : shadow, framing });
+      const primary = await make(cutout, freeBg);
+      out.push({ suffix: freeBg === "transparent" ? "-transparent" : "", blob: primary, url: URL.createObjectURL(primary) });
+      if (alsoTransparent && freeBg !== "transparent") {
+        const transparent = await make(cutout, "transparent");
+        out.push({ suffix: "-transparent", blob: transparent, url: URL.createObjectURL(transparent) });
+      }
+      return out;
+    };
+
     await runPool(pending, FREE_CONCURRENCY, async (it) => {
       try {
-        const results: ResultFile[] = [];
         const cutout = await removeBackgroundLocal(it.file);
-        if (mode === "free") {
-          const primary = await compositeOnBackground(cutout, freeBg);
-          results.push({ suffix: freeBg === "transparent" ? "-transparent" : "", blob: primary, url: URL.createObjectURL(primary) });
-          if (alsoTransparent && freeBg !== "transparent") {
-            const transparent = await compositeOnBackground(cutout, "transparent");
-            results.push({ suffix: "-transparent", blob: transparent, url: URL.createObjectURL(transparent) });
-          }
-        } else {
-          const primary = await studioEnhance(cutout, { background: freeBg, autoColor, shadow, framing });
-          results.push({ suffix: freeBg === "transparent" ? "-transparent" : "", blob: primary, url: URL.createObjectURL(primary) });
-          if (alsoTransparent && freeBg !== "transparent") {
-            const transparent = await studioEnhance(cutout, { background: "transparent", autoColor, shadow: false, framing });
-            results.push({ suffix: "-transparent", blob: transparent, url: URL.createObjectURL(transparent) });
-          }
-        }
-        patch(it.id, { status: "done", results });
+        const results = await recompose(cutout);
+        patch(it.id, { status: "done", results, cutout, recompose });
       } catch (err) {
         patch(it.id, { status: "error", error: err instanceof Error ? err.message : "Failed" });
       }
@@ -176,6 +194,7 @@ export default function Enhancer() {
   const pending = items.filter((it) => it.status === "queued" || it.status === "error").length;
   const fileCount = items.reduce((n, it) => n + (it.status === "done" ? it.results?.length ?? 0 : 0), 0);
   const runCount = pending || items.length;
+  const editingItem = editingId ? items.find((it) => it.id === editingId) : null;
 
   return (
     <div className="space-y-5">
@@ -361,6 +380,15 @@ export default function Enhancer() {
                   </span>
                   {primary && (
                     <span className="flex shrink-0 gap-2">
+                      {it.cutout && (
+                        <button
+                          type="button"
+                          onClick={() => setEditingId(it.id)}
+                          className="text-[11px] text-sky-300 underline-offset-2 hover:underline"
+                        >
+                          Refine
+                        </button>
+                      )}
                       {it.results!.map((r) => (
                         <a
                           key={r.suffix}
@@ -378,6 +406,15 @@ export default function Enhancer() {
             );
           })}
         </div>
+      )}
+
+      {editingItem && editingItem.cutout && (
+        <MaskEditor
+          original={editingItem.file}
+          cutout={editingItem.cutout}
+          onSave={(blob) => saveEdit(editingItem, blob)}
+          onClose={() => setEditingId(null)}
+        />
       )}
     </div>
   );
