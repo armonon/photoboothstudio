@@ -85,7 +85,19 @@ const statusBadge: Record<Status, { label: string; className: string }> = {
 };
 
 export default function Enhancer() {
-  useEffect(() => { warmupModel(); }, []);
+  // Warm the model up only AFTER the first paint. The desktop app builds the ISNet
+  // session on the main thread; doing that during mount blocks WKWebView's first
+  // paint and the window shows blank until you click. Two rAFs guarantee a paint first.
+  useEffect(() => {
+    let inner = 0;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => warmupModel());
+    });
+    return () => {
+      cancelAnimationFrame(outer);
+      cancelAnimationFrame(inner);
+    };
+  }, []);
 
   const [items, setItems] = useState<Item[]>([]);
   const [mode, setMode] = useState<Mode>("free");
