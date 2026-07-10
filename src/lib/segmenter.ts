@@ -2,70 +2,64 @@
 // Everything — runtime (/ort), wasm, and model (/models) — is served locally, so it works
 // fully offline once bundled into the desktop app. No third-party CDN, no API.
 //
-// Inference runs SINGLE-THREADED ON THE MAIN THREAD (numThreads:1, proxy:false), using the
-// UMD build loaded via a <script> tag. This is the one configuration that works everywhere:
-//   • No Web Workers / SharedArrayBuffer. ORT's ESM proxy + pthread workers are `type:"module"`,
-//     which the desktop app's WKWebView blocks (and which also fail to resolve the wasm URL
-//     inside the worker). The UMD build initialises wasm directly on the main thread.
-//   • numThreads:1 selects the non-threaded wasm binary (ort-wasm-simd.wasm), which uses
-//     growable memory rather than a fixed-size SharedArrayBuffer.
-// It's a few seconds per image, but it never fails — which multi-threaded/proxied wasm did.
+// Inference runs SINGLE-THREADED in a CLASSIC Web Worker (public/isnet-worker.js) so the
+// ~15-20s wasm run never freezes the UI. Why this exact shape works everywhere:
+//   • Classic worker (importScripts) — the desktop WKWebView blocks `type:"module"` workers,
+//     which is what ORT's own proxy/pthread paths use; a classic worker is fine.
+//   • numThreads:1 selects the non-threaded wasm binary (ort-wasm-simd.wasm) with growable
+//     memory — no SharedArrayBuffer, so no cross-origin-isolation requirement.
+// The heavy model (BiRefNet) was dropped earlier because it OOM'd the 4GB wasm32 ceiling.
 
 const SIZE = 1024; // ISNet input resolution
 const MAX_DIM = 4096; // cap the working/output resolution to bound canvas memory on big batches
 const MEAN = [0.5, 0.5, 0.5]; // ISNet normalization: (x/255 - 0.5) / 1.0
 const STD = [1.0, 1.0, 1.0];
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Ort = any;
+// Config the worker needs. Absolute URLs: a worker (and the wasm loader inside it) can't
+// resolve root-relative paths against the page.
+function workerConfig() {
+  return {
+    ortUrl: new URL("/ort/ort.umd.js", location.href).href,
+    wasmPaths: new URL("/ort/", location.href).href,
+    modelUrl: new URL("/models/isnet.onnx", location.href).href,
+  };
+}
 
-let ortPromise: Promise<Ort> | null = null;
-let sessionPromise: Promise<Ort> | null = null;
+let worker: Worker | null = null;
+let reqId = 0;
+const pending = new Map<number, { resolve: (v: Float32Array) => void; reject: (e: Error) => void }>();
 
-// Load the UMD build via a <script> tag so webpack never touches it and wasm is
-// initialised on the main thread (the ESM build only initialises via a module worker).
-function loadOrtScript(): Promise<Ort> {
-  const w = window as unknown as { ort?: Ort };
-  if (w.ort) return Promise.resolve(w.ort);
-  return new Promise<Ort>((resolve, reject) => {
-    const done = () => (w.ort ? resolve(w.ort) : reject(new Error("ONNX runtime failed to load")));
-    const existing = document.querySelector<HTMLScriptElement>("script[data-ort]");
-    if (existing) {
-      existing.addEventListener("load", done);
-      existing.addEventListener("error", () => reject(new Error("ONNX runtime failed to load")));
-      return;
-    }
-    const s = document.createElement("script");
-    s.src = "/ort/ort.umd.js";
-    s.async = true;
-    s.dataset.ort = "1";
-    s.onload = done;
-    s.onerror = () => reject(new Error("ONNX runtime failed to load"));
-    document.head.appendChild(s);
+function getWorker(): Worker {
+  if (!worker) {
+    worker = new Worker("/isnet-worker.js");
+    worker.onmessage = (e: MessageEvent) => {
+      const m = e.data || {};
+      if (m.type === "result") {
+        pending.get(m.id)?.resolve(m.out as Float32Array);
+        pending.delete(m.id);
+      } else if (m.type === "error") {
+        pending.get(m.id)?.reject(new Error(m.message || "Inference failed"));
+        pending.delete(m.id);
+      }
+      // "ready" is the warmup ack — nothing to resolve.
+    };
+    worker.onerror = () => {
+      const err = new Error("Background-removal worker crashed");
+      pending.forEach((p) => p.reject(err));
+      pending.clear();
+    };
+  }
+  return worker;
+}
+
+/** Run ISNet in the worker; returns the raw saliency map. Transfers the input buffer over. */
+function infer(chw: Float32Array): Promise<Float32Array> {
+  const w = getWorker();
+  const id = ++reqId;
+  return new Promise<Float32Array>((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    w.postMessage({ type: "run", id, size: SIZE, data: chw, ...workerConfig() }, [chw.buffer]);
   });
-}
-
-async function getOrt(): Promise<Ort> {
-  if (!ortPromise) {
-    ortPromise = loadOrtScript().then((ort) => {
-      // Absolute URL: the wasm loader can't resolve a root-relative path in every context.
-      ort.env.wasm.wasmPaths = new URL("/ort/", location.href).href;
-      ort.env.wasm.numThreads = 1; // main-thread, non-threaded binary (growable memory)
-      ort.env.wasm.proxy = false; // no module worker (blocked in WKWebView)
-      ort.env.wasm.simd = true;
-      return ort;
-    });
-  }
-  return ortPromise;
-}
-
-async function getSession(): Promise<Ort> {
-  if (!sessionPromise) {
-    sessionPromise = getOrt().then((ort) =>
-      ort.InferenceSession.create("/models/isnet.onnx", { executionProviders: ["wasm"] }),
-    );
-  }
-  return sessionPromise;
 }
 
 function canvas(w: number, h: number) {
@@ -75,16 +69,17 @@ function canvas(w: number, h: number) {
   return [c, c.getContext("2d", { willReadFrequently: true })!] as const;
 }
 
-/** Start loading the ORT runtime and model in the background (call early to reduce first-run wait). */
+/** Start loading the runtime + model in the worker (call early to reduce first-run wait). */
 export function warmupModel(): void {
-  getSession().catch(() => {/* ignore — errors surface properly on first real call */});
+  try {
+    getWorker().postMessage({ type: "init", ...workerConfig() });
+  } catch {
+    /* ignore — a real call will surface any error */
+  }
 }
 
 /** Remove the background locally; returns a transparent PNG cutout. */
 export async function removeBackgroundOnnx(input: Blob): Promise<Blob> {
-  const ort = await getOrt();
-  const session = await getSession();
-
   const bitmap = await createImageBitmap(input);
   // Downscale oversized photos so a 40-image batch can't blow up canvas memory.
   const fit = Math.min(1, MAX_DIM / Math.max(bitmap.width, bitmap.height));
@@ -108,9 +103,7 @@ export async function removeBackgroundOnnx(input: Blob): Promise<Blob> {
     chw[2 * plane + p] = (data[p * 4 + 2] / 255 - MEAN[2]) / STD[2];
   }
 
-  const feeds = { [session.inputNames[0]]: new ort.Tensor("float32", chw, [1, 3, SIZE, SIZE]) };
-  const result = await session.run(feeds);
-  const pred = result[session.outputNames[0]].data as Float32Array;
+  const pred = await infer(chw); // runs in the worker — UI stays responsive
 
   // Min-max normalize the saliency map to 0..255.
   let mi = Infinity;
