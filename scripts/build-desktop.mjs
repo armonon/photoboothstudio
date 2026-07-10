@@ -7,6 +7,9 @@ process.env.NEXT_DESKTOP = "1";
 process.env.NEXT_PUBLIC_FN_BASE =
   process.env.NEXT_PUBLIC_FN_BASE || "https://photoboothstudio-b6ac09.netlify.app";
 
+const staged = spawnSync("node", ["scripts/copy-ort.mjs"], { stdio: "inherit" });
+if (staged.status) process.exit(staged.status);
+
 const fetched = spawnSync("node", ["scripts/fetch-model.mjs"], { stdio: "inherit" });
 if (fetched.status) process.exit(fetched.status);
 
