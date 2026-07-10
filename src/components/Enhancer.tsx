@@ -84,7 +84,7 @@ const statusBadge: Record<Status, { label: string; className: string }> = {
   error: { label: "Failed", className: "bg-red-500/20 text-red-300" },
 };
 
-export default function Enhancer() {
+export default function Enhancer({ mode }: { mode: Mode }) {
   // Warm the model up only AFTER the first paint. The desktop app builds the ISNet
   // session on the main thread; doing that during mount blocks WKWebView's first
   // paint and the window shows blank until you click. Two rAFs guarantee a paint first.
@@ -100,7 +100,6 @@ export default function Enhancer() {
   }, []);
 
   const [items, setItems] = useState<Item[]>([]);
-  const [mode, setMode] = useState<Mode>("free");
   const [freeBg, setFreeBg] = useState<FreeBackground>("white");
   const [alsoTransparent, setAlsoTransparent] = useState(false);
   const [framing, setFraming] = useState<EnhanceFraming>("keep");
@@ -210,23 +209,6 @@ export default function Enhancer() {
 
   return (
     <div className="space-y-5">
-      {/* Mode */}
-      <div className="inline-flex rounded-lg border border-neutral-800 p-1">
-        {(["free", "studio"] as Mode[]).map((m) => (
-          <button
-            key={m}
-            type="button"
-            onClick={() => setMode(m)}
-            className={clsx(
-              "rounded-md px-3 py-1.5 text-sm",
-              mode === m ? "bg-white text-black" : "text-neutral-400 hover:text-neutral-200",
-            )}
-          >
-            {m === "free" ? "Remove background · free" : "Studio enhance · free"}
-          </button>
-        ))}
-      </div>
-
       <label
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => {
@@ -391,14 +373,18 @@ export default function Enhancer() {
                     {it.status === "error" ? it.error : it.name}
                   </span>
                   {primary && (
-                    <span className="flex shrink-0 gap-2">
+                    <span className="flex shrink-0 items-center gap-2">
                       {it.cutout && (
                         <button
                           type="button"
                           onClick={() => setEditingId(it.id)}
-                          className="text-[11px] text-sky-300 underline-offset-2 hover:underline"
+                          title="Select / cut out by hand"
+                          className="inline-flex items-center gap-1 rounded border border-sky-500/50 bg-sky-500/10 px-1.5 py-0.5 text-[11px] font-medium text-sky-200 hover:bg-sky-500/20"
                         >
-                          Refine
+                          <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.6">
+                            <path d="M11.5 2.5l2 2L6 12l-3 1 1-3 7.5-7.5z" strokeLinejoin="round" strokeLinecap="round" />
+                          </svg>
+                          Edit
                         </button>
                       )}
                       {it.results!.map((r) => (

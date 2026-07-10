@@ -5,7 +5,8 @@ import { usePathname } from "next/navigation";
 import clsx from "clsx";
 
 const tabs = [
-  { href: "/", label: "Studio" },
+  { href: "/", label: "Remove Background" },
+  { href: "/studio", label: "Studio" },
   { href: "/download", label: "Download app" },
 ];
 
