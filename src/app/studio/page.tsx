@@ -1,15 +1,15 @@
-import HandCutout from "@/components/HandCutout";
+import LayeredStudio from "@/components/LayeredStudio";
 
 export default function StudioPage() {
   return (
-    <main className="mx-auto max-w-4xl p-8">
+    <main className="mx-auto max-w-6xl p-6">
       <h1 className="text-2xl font-semibold">Studio</h1>
       <p className="mt-1 text-neutral-400">
-        Cut out any photo by hand — brush, magic wand and lasso, no auto-removal and no waiting. Open an image and select
-        the subject yourself, then download the transparent PNG.
+        Drop or import several photos — each becomes a layer. Arrange them, cut them out by hand (brush, magic wand,
+        lasso), then export the flattened PNG.
       </p>
-      <div className="mt-6">
-        <HandCutout />
+      <div className="mt-5">
+        <LayeredStudio />
       </div>
     </main>
   );
