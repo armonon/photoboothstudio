@@ -22,6 +22,38 @@ const UNDO_LIMIT = 20;
 type Tool = "move" | "brush" | "wand" | "lasso";
 type Paint = "keep" | "remove";
 
+interface TextSpec {
+  content: string;
+  family: string;
+  size: number;
+  color: string;
+  bold: boolean;
+  italic: boolean;
+}
+
+// Common families likely present on macOS/desktop; plus the user can upload font
+// files and (where supported) pull in every installed font. See the font toolbar.
+const BUILTIN_FONTS = [
+  "Helvetica Neue",
+  "Arial",
+  "Georgia",
+  "Times New Roman",
+  "Courier New",
+  "Verdana",
+  "Trebuchet MS",
+  "Palatino",
+  "Impact",
+  "Futura",
+  "Gill Sans",
+  "Optima",
+  "Baskerville",
+  "American Typewriter",
+  "Menlo",
+  "Snell Roundhand",
+  "Chalkboard SE",
+  "Marker Felt",
+];
+
 interface Layer {
   id: string;
   name: string;
@@ -35,6 +67,43 @@ interface Layer {
   alpha: Uint8Array; // w*h mask
   cvs: HTMLCanvasElement; // offscreen w*h, rgba masked by alpha (what we draw)
   thumb: string; // dataURL for the panel
+  scale: number; // display scale (non-destructive resize); native pixels stay w*h
+  kind: "image" | "text";
+  text?: TextSpec; // present on text layers
+}
+
+function fontCss(t: TextSpec): string {
+  const fam = /["',]/.test(t.family) ? t.family : `"${t.family}"`;
+  return `${t.italic ? "italic " : ""}${t.bold ? "700" : "400"} ${t.size}px ${fam}, sans-serif`;
+}
+
+// Rasterise a text layer into its rgba/alpha/cvs (call after any text/font change).
+function renderText(l: Layer) {
+  const t = l.text!;
+  const lines = (t.content || " ").split("\n");
+  const [mc, mctx] = make2d(4, 4);
+  mctx.font = fontCss(t);
+  const pad = Math.ceil(t.size * 0.3);
+  const lineH = Math.ceil(t.size * 1.32);
+  const textW = Math.max(1, ...lines.map((ln) => Math.ceil(mctx.measureText(ln).width)));
+  const w = textW + pad * 2;
+  const h = lineH * lines.length + pad * 2;
+  void mc;
+  l.w = w;
+  l.h = h;
+  l.cvs.width = w;
+  l.cvs.height = h;
+  const ctx = l.cvs.getContext("2d", { willReadFrequently: true })!;
+  ctx.clearRect(0, 0, w, h);
+  ctx.font = fontCss(t);
+  ctx.textBaseline = "top";
+  ctx.textAlign = "left";
+  ctx.fillStyle = t.color;
+  lines.forEach((ln, i) => ctx.fillText(ln, pad, pad + i * lineH));
+  const img = ctx.getImageData(0, 0, w, h);
+  l.rgba = img.data;
+  l.alpha = new Uint8Array(w * h);
+  for (let p = 0; p < w * h; p++) l.alpha[p] = img.data[p * 4 + 3];
 }
 
 function make2d(w: number, h: number) {
@@ -85,8 +154,47 @@ export default function LayeredStudio() {
   const [tolerance, setTolerance] = useState(0.15);
   const [contiguous, setContiguous] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [fonts, setFonts] = useState<string[]>(BUILTIN_FONTS);
   const [, force] = useState(0);
   const rerender = () => force((n) => n + 1);
+
+  const addFont = (family: string) =>
+    setFonts((prev) => (prev.includes(family) ? prev : [...prev, family].sort((a, b) => a.localeCompare(b))));
+
+  // Upload a font file (.ttf/.otf/.woff) → register it so it's usable in text layers.
+  async function addFontFile(files: FileList | null) {
+    if (!files) return;
+    for (const file of Array.from(files)) {
+      try {
+        const family = file.name.replace(/\.[^.]+$/, "");
+        const face = new FontFace(family, await file.arrayBuffer());
+        await face.load();
+        (document.fonts as FontFaceSet).add(face);
+        addFont(family);
+        // re-render any text layer already using this family
+        updateText({});
+      } catch {
+        /* ignore an unreadable font file */
+      }
+    }
+  }
+
+  // Pull in every installed font where the browser supports it (Chromium web). Not
+  // available in the desktop WKWebView — that's why upload + built-ins exist too.
+  async function useInstalledFonts() {
+    const q = (window as unknown as { queryLocalFonts?: () => Promise<{ family: string }[]> }).queryLocalFonts;
+    if (!q) {
+      alert("Browsing installed fonts isn't supported here — use “Add font file”, or type any installed font's exact name.");
+      return;
+    }
+    try {
+      const list = await q();
+      const fams = Array.from(new Set(list.map((f) => f.family))).sort((a, b) => a.localeCompare(b));
+      setFonts((prev) => Array.from(new Set([...prev, ...fams])).sort((a, b) => a.localeCompare(b)));
+    } catch {
+      /* permission denied */
+    }
+  }
 
   const active = () => layers.current.find((l) => l.id === activeId) || null;
 
@@ -130,6 +238,8 @@ export default function LayeredStudio() {
           alpha: new Uint8Array(w * h).fill(255),
           cvs,
           thumb: "",
+          scale: 1,
+          kind: "image",
         };
         bake(layer);
         layer.thumb = makeThumb(layer);
@@ -142,6 +252,67 @@ export default function LayeredStudio() {
     } finally {
       setBusy(false);
     }
+  }
+
+  // ---- text ----
+  function addText() {
+    if (!doc.current.w) doc.current = { w: 1024, h: 1024 };
+    const [cvs] = make2d(1, 1);
+    const layer: Layer = {
+      id: crypto.randomUUID(),
+      name: "Text",
+      visible: true,
+      opacity: 1,
+      x: 0,
+      y: 0,
+      w: 1,
+      h: 1,
+      rgba: new Uint8ClampedArray(4),
+      alpha: new Uint8Array(1),
+      cvs,
+      thumb: "",
+      scale: 1,
+      kind: "text",
+      text: { content: "Your text", family: fonts[0] || "Arial", size: Math.round(doc.current.h / 12) || 64, color: "#ffffff", bold: true, italic: false },
+    };
+    renderText(layer);
+    layer.x = Math.round((doc.current.w - layer.w) / 2);
+    layer.y = Math.round((doc.current.h - layer.h) / 2);
+    layer.thumb = makeThumb(layer);
+    layers.current.push(layer);
+    setActiveId(layer.id);
+    setTool("move");
+    if (!didFit.current) fitView();
+    rerender();
+    scheduleDraw();
+  }
+
+  // Update the active text layer's spec, re-rasterise, keep it centred on its anchor.
+  function updateText(patch: Partial<TextSpec>) {
+    const l = active();
+    if (!l || l.kind !== "text" || !l.text) return;
+    const cx = l.x + (l.w * l.scale) / 2;
+    const cy = l.y + (l.h * l.scale) / 2;
+    l.text = { ...l.text, ...patch };
+    renderText(l);
+    l.x = Math.round(cx - (l.w * l.scale) / 2);
+    l.y = Math.round(cy - (l.h * l.scale) / 2);
+    l.thumb = makeThumb(l);
+    rerender();
+    scheduleDraw();
+  }
+
+  // Resize the active layer (scales around its centre; non-destructive).
+  function setLayerScale(s: number) {
+    const l = active();
+    if (!l) return;
+    const cx = l.x + (l.w * l.scale) / 2;
+    const cy = l.y + (l.h * l.scale) / 2;
+    l.scale = s;
+    l.x = Math.round(cx - (l.w * l.scale) / 2);
+    l.y = Math.round(cy - (l.h * l.scale) / 2);
+    rerender();
+    scheduleDraw();
   }
 
   function fitView() {
@@ -204,11 +375,11 @@ export default function LayeredStudio() {
     }
     ctx.restore();
 
-    ctx.imageSmoothingEnabled = zoom < 1;
+    ctx.imageSmoothingEnabled = true;
     for (const l of layers.current) {
       if (!l.visible) continue;
       ctx.globalAlpha = l.opacity;
-      ctx.drawImage(l.cvs, panX + l.x * zoom, panY + l.y * zoom, l.w * zoom, l.h * zoom);
+      ctx.drawImage(l.cvs, panX + l.x * zoom, panY + l.y * zoom, l.w * l.scale * zoom, l.h * l.scale * zoom);
     }
     ctx.globalAlpha = 1;
 
@@ -218,19 +389,19 @@ export default function LayeredStudio() {
       ctx.strokeStyle = "#38bdf8";
       ctx.lineWidth = 1.5;
       ctx.setLineDash([6, 4]);
-      ctx.strokeRect(panX + a.x * zoom, panY + a.y * zoom, a.w * zoom, a.h * zoom);
+      ctx.strokeRect(panX + a.x * zoom, panY + a.y * zoom, a.w * a.scale * zoom, a.h * a.scale * zoom);
       ctx.setLineDash([]);
     }
 
-    // lasso overlay
+    // lasso overlay (points stored in layer-native space)
     if (lasso.current.length > 1 && a) {
       ctx.strokeStyle = "#fff";
       ctx.lineWidth = 1.5;
       ctx.setLineDash([5, 4]);
       ctx.beginPath();
       lasso.current.forEach((p, i) => {
-        const sx = panX + (a.x + p.x) * zoom;
-        const sy = panY + (a.y + p.y) * zoom;
+        const sx = panX + (a.x + p.x * a.scale) * zoom;
+        const sy = panY + (a.y + p.y * a.scale) * zoom;
         if (i === 0) ctx.moveTo(sx, sy);
         else ctx.lineTo(sx, sy);
       });
@@ -250,8 +421,8 @@ export default function LayeredStudio() {
     for (let i = layers.current.length - 1; i >= 0; i--) {
       const l = layers.current[i];
       if (!l.visible) continue;
-      const lx = Math.floor(dx - l.x);
-      const ly = Math.floor(dy - l.y);
+      const lx = Math.floor((dx - l.x) / l.scale);
+      const ly = Math.floor((dy - l.y) / l.scale);
       if (lx >= 0 && ly >= 0 && lx < l.w && ly < l.h && l.alpha[ly * l.w + lx] > 8) return l;
     }
     return null;
@@ -287,15 +458,16 @@ export default function LayeredStudio() {
       }
       return;
     }
-    // paint tools act on the active layer
+    // paint tools act on the active layer, in its native (unscaled) pixel space
     const a = active();
     if (!a) return;
-    const lx = x - a.x;
-    const ly = y - a.y;
+    const lx = (x - a.x) / a.scale;
+    const ly = (y - a.y) / a.scale;
+    const rad = brush / view.current.zoom / a.scale / 2;
     ptr.current.mode = "paint";
     if (tool === "brush") {
       pushUndo(a);
-      strokeSegment(a.alpha, a.w, a.h, lx, ly, lx, ly, brush / view.current.zoom / 2, hardness, value(e.altKey));
+      strokeSegment(a.alpha, a.w, a.h, lx, ly, lx, ly, rad, hardness, value(e.altKey));
       bake(a);
       scheduleDraw();
     } else if (tool === "lasso") {
@@ -335,11 +507,12 @@ export default function LayeredStudio() {
       const a = active();
       if (a) {
         if (tool === "brush") {
-          strokeSegment(a.alpha, a.w, a.h, ptr.current.lx - a.x, ptr.current.ly - a.y, x - a.x, y - a.y, brush / view.current.zoom / 2, hardness, value(e.altKey));
+          const rad = brush / view.current.zoom / a.scale / 2;
+          strokeSegment(a.alpha, a.w, a.h, (ptr.current.lx - a.x) / a.scale, (ptr.current.ly - a.y) / a.scale, (x - a.x) / a.scale, (y - a.y) / a.scale, rad, hardness, value(e.altKey));
           bake(a);
           scheduleDraw();
         } else if (tool === "lasso") {
-          lasso.current.push({ x: x - a.x, y: y - a.y });
+          lasso.current.push({ x: (x - a.x) / a.scale, y: (y - a.y) / a.scale });
           scheduleDraw();
         }
       }
@@ -442,7 +615,7 @@ export default function LayeredStudio() {
     for (const l of layers.current) {
       if (!l.visible) continue;
       ctx.globalAlpha = l.opacity;
-      ctx.drawImage(l.cvs, l.x, l.y, l.w, l.h);
+      ctx.drawImage(l.cvs, l.x, l.y, l.w * l.scale, l.h * l.scale);
     }
     ctx.globalAlpha = 1;
     const blob = await new Promise<Blob | null>((res) => out.toBlob(res, "image/png"));
@@ -471,6 +644,8 @@ export default function LayeredStudio() {
     clsx("rounded px-2.5 py-1.5 text-xs font-medium", on ? "bg-white text-black" : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700");
 
   const ordered = [...layers.current].reverse(); // panel shows top layer first
+  const act = active();
+  const tbtn = (on: boolean) => clsx("rounded px-2 py-1 text-xs font-medium", on ? "bg-white text-black" : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700");
 
   return (
     <div className="flex h-[72vh] flex-col overflow-hidden rounded-lg border border-neutral-800">
@@ -482,6 +657,7 @@ export default function LayeredStudio() {
               {t === "move" ? "Move" : t === "brush" ? "Brush" : t === "wand" ? "Magic Wand" : "Lasso"}
             </button>
           ))}
+          <button className={btn(false)} onClick={addText} title="Add a text layer">+ Text</button>
         </div>
         {tool !== "move" && (
           <>
@@ -537,6 +713,67 @@ export default function LayeredStudio() {
           </button>
         </div>
       </div>
+
+      {/* properties row — resize any layer; edit text + fonts on text layers */}
+      {act && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-neutral-800 px-3 py-2 text-xs text-neutral-400">
+          <label className="flex items-center gap-2">
+            Size
+            <input type="range" min={10} max={400} value={Math.round(act.scale * 100)} onChange={(e) => setLayerScale(+e.target.value / 100)} />
+            <span className="w-10 tabular-nums text-neutral-500">{Math.round(act.scale * 100)}%</span>
+          </label>
+
+          {act.kind === "text" && act.text && (
+            <>
+              <div className="h-5 w-px bg-neutral-800" />
+              <input
+                value={act.text.content}
+                onChange={(e) => updateText({ content: e.target.value })}
+                placeholder="Type your text"
+                className="w-44 rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-neutral-200"
+              />
+              <select
+                value={fonts.includes(act.text.family) ? act.text.family : ""}
+                onChange={(e) => updateText({ family: e.target.value })}
+                className="max-w-[10rem] rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-neutral-200"
+              >
+                {!fonts.includes(act.text.family) && <option value="">{act.text.family}</option>}
+                {fonts.map((f) => (
+                  <option key={f} value={f} style={{ fontFamily: f }}>
+                    {f}
+                  </option>
+                ))}
+              </select>
+              <input
+                placeholder="or type a font name ↵"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    const v = e.currentTarget.value.trim();
+                    if (v) {
+                      addFont(v);
+                      updateText({ family: v });
+                      e.currentTarget.value = "";
+                    }
+                  }
+                }}
+                className="w-36 rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-neutral-200"
+              />
+              <label className="flex items-center gap-1">
+                Size
+                <input type="number" min={8} max={600} value={act.text.size} onChange={(e) => updateText({ size: +e.target.value })} className="w-16 rounded border border-neutral-700 bg-neutral-900 px-1.5 py-1 text-neutral-200" />
+              </label>
+              <input type="color" value={act.text.color} onChange={(e) => updateText({ color: e.target.value })} className="h-7 w-8 cursor-pointer rounded border border-neutral-700 bg-neutral-900" />
+              <button className={tbtn(act.text.bold)} onClick={() => updateText({ bold: !act.text!.bold })}><b>B</b></button>
+              <button className={tbtn(act.text.italic)} onClick={() => updateText({ italic: !act.text!.italic })}><i>I</i></button>
+              <label className="cursor-pointer rounded border border-neutral-600 px-2 py-1 text-neutral-200 hover:border-neutral-400">
+                Add font file
+                <input type="file" accept=".ttf,.otf,.woff,.woff2" multiple className="hidden" onChange={(e) => { addFontFile(e.currentTarget.files); e.currentTarget.value = ""; }} />
+              </label>
+              <button className={tbtn(false)} onClick={useInstalledFonts}>Installed fonts</button>
+            </>
+          )}
+        </div>
+      )}
 
       <div className="flex min-h-0 flex-1">
         {/* canvas */}
