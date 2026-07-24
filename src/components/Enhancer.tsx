@@ -108,7 +108,54 @@ export default function Enhancer({ mode }: { mode: Mode }) {
   const [running, setRunning] = useState(false);
   const [zipping, setZipping] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [manualFile, setManualFile] = useState<File | null>(null);
   const orderRef = useRef(0);
+
+  // A closure that rebuilds a result's outputs from a cutout, capturing the current
+  // background/enhance settings. Shared by auto-removal, the Edit editor, and manual cutout.
+  function buildRecompose() {
+    const bg0 = freeBg;
+    const m = mode;
+    const ac = autoColor;
+    const sh = shadow;
+    const fr = framing;
+    const alsoT = alsoTransparent;
+    return async (cutout: Blob): Promise<ResultFile[]> => {
+      const out: ResultFile[] = [];
+      const make = (cut: Blob, bg: FreeBackground) =>
+        m === "free"
+          ? compositeOnBackground(cut, bg)
+          : studioEnhance(cut, { background: bg, autoColor: ac, shadow: bg === "transparent" ? false : sh, framing: fr });
+      const primary = await make(cutout, bg0);
+      out.push({ suffix: bg0 === "transparent" ? "-transparent" : "", blob: primary, url: URL.createObjectURL(primary) });
+      if (alsoT && bg0 !== "transparent") {
+        const transparent = await make(cutout, "transparent");
+        out.push({ suffix: "-transparent", blob: transparent, url: URL.createObjectURL(transparent) });
+      }
+      return out;
+    };
+  }
+
+  // Save a hand-made cutout (from the "Cut out by hand" flow) as a new done result.
+  async function saveManual(original: File, cutout: Blob) {
+    const recompose = buildRecompose();
+    const results = await recompose(cutout);
+    setItems((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        order: orderRef.current++,
+        name: original.name,
+        file: original,
+        preview: URL.createObjectURL(original),
+        status: "done" as Status,
+        results,
+        cutout,
+        recompose,
+      },
+    ]);
+    setManualFile(null);
+  }
 
   async function saveEdit(item: Item, newCutout: Blob) {
     if (!item.recompose) return;
@@ -155,21 +202,7 @@ export default function Enhancer({ mode }: { mode: Mode }) {
     setItems((prev) =>
       prev.map((it) => (pending.some((p) => p.id === it.id) ? { ...it, status: "working", error: undefined } : it)),
     );
-    // Capture the current settings so the Pro editor can rebuild outputs from an edited cutout.
-    const recompose = async (cutout: Blob): Promise<ResultFile[]> => {
-      const out: ResultFile[] = [];
-      const make = (cut: Blob, bg: FreeBackground) =>
-        mode === "free"
-          ? compositeOnBackground(cut, bg)
-          : studioEnhance(cut, { background: bg, autoColor, shadow: bg === "transparent" ? false : shadow, framing });
-      const primary = await make(cutout, freeBg);
-      out.push({ suffix: freeBg === "transparent" ? "-transparent" : "", blob: primary, url: URL.createObjectURL(primary) });
-      if (alsoTransparent && freeBg !== "transparent") {
-        const transparent = await make(cutout, "transparent");
-        out.push({ suffix: "-transparent", blob: transparent, url: URL.createObjectURL(transparent) });
-      }
-      return out;
-    };
+    const recompose = buildRecompose();
 
     await runPool(pending, FREE_CONCURRENCY, async (it) => {
       try {
@@ -230,6 +263,28 @@ export default function Enhancer({ mode }: { mode: Mode }) {
           }}
         />
       </label>
+
+      {/* Cut out by hand — open the editor directly on one photo, no auto-removal */}
+      <div className="flex items-center gap-2 text-xs text-neutral-500">
+        <span>or</span>
+        <label className="inline-flex cursor-pointer items-center gap-1.5 rounded border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 font-medium text-sky-200 hover:bg-sky-500/20">
+          <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6">
+            <path d="M11.5 2.5l2 2L6 12l-3 1 1-3 7.5-7.5z" strokeLinejoin="round" strokeLinecap="round" />
+          </svg>
+          Cut one out by hand
+          <input
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.currentTarget.files?.[0];
+              if (f) setManualFile(f);
+              e.currentTarget.value = "";
+            }}
+          />
+        </label>
+        <span className="text-neutral-600">— select the subject yourself, no waiting</span>
+      </div>
 
       {/* Controls */}
       <div className="space-y-4 rounded-lg border border-neutral-800 p-4">
@@ -412,6 +467,14 @@ export default function Enhancer({ mode }: { mode: Mode }) {
           cutout={editingItem.cutout}
           onSave={(blob) => saveEdit(editingItem, blob)}
           onClose={() => setEditingId(null)}
+        />
+      )}
+
+      {manualFile && (
+        <MaskEditor
+          original={manualFile}
+          onSave={(blob) => saveManual(manualFile, blob)}
+          onClose={() => setManualFile(null)}
         />
       )}
     </div>

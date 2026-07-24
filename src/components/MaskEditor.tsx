@@ -23,7 +23,9 @@ type Paint = "keep" | "remove";
 
 interface Props {
   original: Blob;
-  cutout: Blob;
+  // The starting cutout, if refining an auto-removal. Omit to start from scratch
+  // (the whole image kept — use Remove tools to cut it out by hand).
+  cutout?: Blob;
   onSave: (cutout: Blob) => void;
   onClose: () => void;
 }
@@ -79,18 +81,26 @@ export default function MaskEditor({ original, cutout, onSave, onClose }: Props)
   useEffect(() => {
     let alive = true;
     (async () => {
-      const cbmp = await createImageBitmap(cutout);
-      const nativeW = cbmp.width;
-      const nativeH = cbmp.height;
-      cbmp.close();
+      // Native size comes from the cutout when refining, else the original (from scratch).
+      const sizeSrc = cutout ?? original;
+      const sbmp = await createImageBitmap(sizeSrc);
+      const nativeW = sbmp.width;
+      const nativeH = sbmp.height;
+      sbmp.close();
       const scale = Math.min(1, EDIT_MAX / Math.max(nativeW, nativeH));
       const W = Math.round(nativeW * scale);
       const H = Math.round(nativeH * scale);
-      const [cut, orig] = await Promise.all([drawScaled(cutout, W, H), drawScaled(original, W, H)]);
+      const orig = await drawScaled(original, W, H);
       if (!alive) return;
       dims.current = { W, H, nativeW, nativeH };
       origRef.current = orig.data;
-      alphaRef.current = extractAlpha(cut.data, W, H);
+      // Refining → start from the cutout's alpha; from scratch → keep everything (255).
+      if (cutout) {
+        alphaRef.current = extractAlpha((await drawScaled(cutout, W, H)).data, W, H);
+      } else {
+        alphaRef.current = new Uint8Array(W * H).fill(255);
+      }
+      if (!alive) return;
       const cc = document.createElement("canvas");
       cc.width = W;
       cc.height = H;
@@ -406,7 +416,7 @@ export default function MaskEditor({ original, cutout, onSave, onClose }: Props)
     <div className="fixed inset-0 z-50 flex flex-col bg-neutral-950/95 backdrop-blur">
       {/* top bar */}
       <div className="flex items-center gap-2 border-b border-neutral-800 px-3 py-2 text-sm">
-        <span className="mr-2 font-medium text-neutral-200">Refine cutout</span>
+        <span className="mr-2 font-medium text-neutral-200">{cutout ? "Refine cutout" : "Cut out by hand"}</span>
         <div className="flex gap-1">
           {(["brush", "wand", "lasso", "pan"] as Tool[]).map((t) => (
             <button key={t} className={btn(tool === t)} onClick={() => setTool(t)}>
