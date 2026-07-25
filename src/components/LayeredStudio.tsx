@@ -11,6 +11,7 @@ import {
   strokeSegment,
   type MaskValue,
 } from "@/lib/mask-edit";
+import { samDecode, samEncode, samForget, samWarm, type SamPoint } from "@/lib/sam";
 
 // Studio = a layered, by-hand cutout compositor. Drop/import several images — each
 // becomes a layer — arrange and cut them out, then export the flattened PNG. The
@@ -19,7 +20,7 @@ import {
 const LAYER_MAX = 1600; // cap a layer's native pixel size for responsiveness
 const UNDO_LIMIT = 20;
 
-type Tool = "move" | "brush" | "wand" | "lasso";
+type Tool = "move" | "smart" | "brush" | "wand" | "lasso";
 type Paint = "keep" | "remove";
 
 interface TextSpec {
@@ -145,6 +146,8 @@ export default function LayeredStudio() {
   const undo = useRef<{ id: string; alpha: Uint8Array }[]>([]);
   const raf = useRef(0);
   const didFit = useRef(false);
+  const samEncoded = useRef(new Set<string>()); // layers whose SAM embedding is ready
+  const samPoints = useRef(new Map<string, SamPoint[]>()); // accumulated click points per layer
 
   const [activeId, setActiveId] = useState<string | null>(null);
   const [tool, setTool] = useState<Tool>("move");
@@ -154,6 +157,7 @@ export default function LayeredStudio() {
   const [tolerance, setTolerance] = useState(0.15);
   const [contiguous, setContiguous] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [samBusy, setSamBusy] = useState(false); // encoding a layer for Smart select
   const [fonts, setFonts] = useState<string[]>(BUILTIN_FONTS);
   const [, force] = useState(0);
   const rerender = () => force((n) => n + 1);
@@ -427,6 +431,42 @@ export default function LayeredStudio() {
     }
     return null;
   }
+  // topmost visible layer whose *bounds* contain the doc point (ignores alpha)
+  function pickBounds(dx: number, dy: number): Layer | null {
+    for (let i = layers.current.length - 1; i >= 0; i--) {
+      const l = layers.current[i];
+      if (!l.visible) continue;
+      if (dx >= l.x && dy >= l.y && dx < l.x + l.w * l.scale && dy < l.y + l.h * l.scale) return l;
+    }
+    return null;
+  }
+
+  // Smart select (MobileSAM): encode the layer once, then decode click points → mask.
+  async function smartClick(a: Layer, lx: number, ly: number, add: boolean, keep: boolean) {
+    if (a.kind !== "image" || lx < 0 || ly < 0 || lx >= a.w || ly >= a.h) return;
+    try {
+      if (!samEncoded.current.has(a.id)) {
+        setSamBusy(true);
+        await samEncode(a.id, a.rgba, a.w, a.h);
+        samEncoded.current.add(a.id);
+        setSamBusy(false);
+      }
+      const prev = samPoints.current.get(a.id) || [];
+      const pts: SamPoint[] = add ? [...prev, { x: lx, y: ly, keep }] : [{ x: lx, y: ly, keep }];
+      samPoints.current.set(a.id, pts);
+      const { mask } = await samDecode(a.id, pts, a.w, a.h);
+      if (mask.length !== a.w * a.h) return;
+      pushUndo(a);
+      a.alpha = mask;
+      bake(a);
+      a.thumb = makeThumb(a);
+      rerender();
+      scheduleDraw();
+    } catch (err) {
+      setSamBusy(false);
+      console.error("Smart select failed:", err);
+    }
+  }
 
   function pushUndo(l: Layer) {
     undo.current.push({ id: l.id, alpha: l.alpha.slice() });
@@ -442,6 +482,17 @@ export default function LayeredStudio() {
     ptr.current.down = true;
     ptr.current.lx = x;
     ptr.current.ly = y;
+
+    if (tool === "smart") {
+      // shift-click adds a refinement point; Keep/Remove sets include vs exclude (Alt inverts)
+      const l = pickBounds(x, y) || active();
+      if (l && l.kind === "image") {
+        setActiveId(l.id);
+        smartClick(l, (x - l.x) / l.scale, (y - l.y) / l.scale, e.shiftKey, (paint === "keep") !== e.altKey);
+      }
+      ptr.current.mode = "";
+      return;
+    }
 
     if (ptr.current.mode === "" && (e.button === 1 || e.shiftKey)) {
       ptr.current.mode = "pan";
@@ -576,6 +627,9 @@ export default function LayeredStudio() {
   }
   function removeLayer(id: string) {
     layers.current = layers.current.filter((l) => l.id !== id);
+    samEncoded.current.delete(id);
+    samPoints.current.delete(id);
+    samForget(id);
     if (activeId === id) setActiveId(layers.current[layers.current.length - 1]?.id ?? null);
     rerender();
     scheduleDraw();
@@ -640,6 +694,11 @@ export default function LayeredStudio() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Lazily load the SAM models the first time Smart select is chosen (~45 MB).
+  useEffect(() => {
+    if (tool === "smart") samWarm();
+  }, [tool]);
+
   const btn = (on: boolean) =>
     clsx("rounded px-2.5 py-1.5 text-xs font-medium", on ? "bg-white text-black" : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700");
 
@@ -651,14 +710,25 @@ export default function LayeredStudio() {
     <div className="flex h-[72vh] flex-col overflow-hidden rounded-lg border border-neutral-800">
       {/* toolbar */}
       <div className="flex flex-wrap items-center gap-2 border-b border-neutral-800 px-3 py-2 text-sm">
-        <div className="flex gap-1">
-          {(["move", "brush", "wand", "lasso"] as Tool[]).map((t) => (
-            <button key={t} className={btn(tool === t)} onClick={() => setTool(t)} disabled={!layers.current.length}>
-              {t === "move" ? "Move" : t === "brush" ? "Brush" : t === "wand" ? "Magic Wand" : "Lasso"}
+        <div className="flex flex-wrap gap-1">
+          {(["move", "smart", "brush", "wand", "lasso"] as Tool[]).map((t) => (
+            <button
+              key={t}
+              className={btn(tool === t)}
+              onClick={() => setTool(t)}
+              disabled={!layers.current.length}
+              title={t === "smart" ? "Smart select — click a subject to cut it out" : undefined}
+            >
+              {t === "move" ? "Move" : t === "smart" ? "✨ Smart" : t === "brush" ? "Brush" : t === "wand" ? "Magic Wand" : "Lasso"}
             </button>
           ))}
           <button className={btn(false)} onClick={addText} title="Add a text layer">+ Text</button>
         </div>
+        {tool === "smart" && (
+          <span className="text-xs text-neutral-500">
+            {samBusy ? "✨ Analyzing image…" : "Click a subject to select it · shift-click to refine · Keep = add, Remove = exclude"}
+          </span>
+        )}
         {tool !== "move" && (
           <>
             <div className="mx-1 h-5 w-px bg-neutral-800" />
@@ -790,6 +860,13 @@ export default function LayeredStudio() {
                 <div className="text-xs text-neutral-600">or use “Add images” — each becomes a layer</div>
                 {busy && <div className="mt-2 text-xs text-sky-300">Loading…</div>}
               </div>
+            </div>
+          )}
+          {samBusy && (
+            <div className="pointer-events-none absolute inset-x-0 top-3 z-10 flex justify-center">
+              <span className="rounded-full border border-sky-500/40 bg-sky-500/15 px-3 py-1 text-xs text-sky-200">
+                ✨ Analyzing image for Smart select…
+              </span>
             </div>
           )}
           <canvas
