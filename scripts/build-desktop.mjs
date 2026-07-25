@@ -1,11 +1,8 @@
 // Build the static export that the Tauri desktop app bundles for offline use.
-// Sets NEXT_DESKTOP so next.config emits `output: "export"`, and points AI mode at
-// the hosted Netlify functions (the desktop app has no local server).
+// Sets NEXT_DESKTOP so next.config emits `output: "export"`. Everything runs on-device.
 import { spawnSync } from "node:child_process";
 
 process.env.NEXT_DESKTOP = "1";
-process.env.NEXT_PUBLIC_FN_BASE =
-  process.env.NEXT_PUBLIC_FN_BASE || "https://photoboothstudio-b6ac09.netlify.app";
 
 const staged = spawnSync("node", ["scripts/copy-ort.mjs"], { stdio: "inherit" });
 if (staged.status) process.exit(staged.status);

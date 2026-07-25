@@ -14,7 +14,6 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@netlify/blobs": "^10.7.9",
     "clsx": "^2.1.1",
     "fflate": "^0.8.3",
     "next": "^15.5.19",

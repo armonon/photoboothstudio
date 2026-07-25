@@ -5,9 +5,10 @@ import { dirname } from "node:path";
 const desktop = process.env.NEXT_DESKTOP === "1";
 
 const nextConfig = {
-  // Pin the workspace root to this project. A stray lockfile in a parent dir
-  // (e.g. ~/package-lock.json) otherwise makes Next infer the wrong root.
   outputFileTracingRoot: dirname(fileURLToPath(import.meta.url)),
+  // Expose the desktop flag to client code so segmenter.ts can disable the ORT
+  // worker proxy (WKWebView blocks module workers used by the proxy).
+  env: { NEXT_IS_DESKTOP: desktop ? "1" : "0" },
   // The desktop build (NEXT_DESKTOP=1) produces a fully static export that Tauri bundles
   // for offline use. The hosted web build stays on the normal Next server runtime.
   output: desktop ? "export" : undefined,
